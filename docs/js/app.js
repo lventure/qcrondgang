@@ -18,7 +18,7 @@ let swWacht = null;        // nieuwe versie van de app staat klaar
 let herlaadNaUpdate = false;
 let renderTeller = 0;
 let syncTimer = null;
-const SNAPSHOT_WACHT_MS = 45000; // Apps Script kan traag opstarten; intussen blijft de app bruikbaar
+const SNAPSHOT_WACHT_MS = 150000; // de bronsheets zijn zwaar; intussen blijft de app bruikbaar
 let bevestigWeg = null;    // app-ID waarvoor "verwijderen" om bevestiging vraagt
 const nieuw = { tab: 'order', lijn: '', zoek: '', gekozen: null }; // toestand van "Nieuwe controle"
 
@@ -199,6 +199,7 @@ async function schermInstellingen() {
   const url = (await db.instelling('url')) || '';
   const sleutel = (await db.instelling('sleutel')) || '';
   const vast = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
+  const bewaard = await bewaardeBestanden();
   const $url = h('input', { class: 'invoer', id: 'inst-url', type: 'url', value: url, placeholder: 'https://script.google.com/macros/s/…/exec', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const $sleutel = h('input', { class: 'invoer', id: 'inst-sleutel', type: 'password', value: sleutel, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   const $uit = h('div', { id: 'inst-uit' });
@@ -237,6 +238,7 @@ async function schermInstellingen() {
       $uit),
     h('div', { class: 'kaart klein' },
       h('p', {}, `Versie van de app: ${APP_VERSIE}`),
+      h('p', { id: 'inst-offline' }, bewaard === null ? 'App op de tablet bewaard: onbekend' : bewaard >= 13 ? `App op de tablet bewaard: ja (${bewaard} bestanden). Ze start ook zonder verbinding.` : `App op de tablet bewaard: NEE (${bewaard} bestanden). Open de app één keer met verbinding voor je de productiezone ingaat.`),
       h('p', {}, vast === null ? 'Vaste opslag: onbekend' : vast ? 'Vaste opslag: ja, de browser ruimt de gegevens niet zelf op.' : 'Vaste opslag: nee. Installeer de app op het startscherm; dan kent Chrome dit meestal toe.'),
       snapshot ? h('p', {}, `Gegevens van ${dagEnUur(snapshot.opgehaaldOm)}: ${snapshot.orders.length} orders, ${snapshot.pallets.length} pallets.`) : null)
   ];
@@ -704,6 +706,25 @@ async function opruimen() {
   }
 }
 
+/** Vraagt de service worker om ontbrekende bestanden opnieuw op te halen. */
+async function controleerCache() {
+  if (!('serviceWorker' in navigator) || !navigator.onLine) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (reg.active) reg.active.postMessage('controleer-cache');
+  } catch (e) { /* geen service worker */ }
+}
+
+/** Hoeveel bestanden van de app staan op de tablet? Voor het instelscherm. */
+async function bewaardeBestanden() {
+  try {
+    if (!('caches' in window)) return null;
+    const naam = `qc-rondgang-${APP_VERSIE}`;
+    if (!(await caches.has(naam))) return 0;
+    return (await (await caches.open(naam)).keys()).length;
+  } catch (e) { return null; }
+}
+
 async function registreerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {
@@ -716,6 +737,7 @@ async function registreerServiceWorker() {
       if (reg.installing) reg.installing.addEventListener('statechange', kijk);
     });
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (herlaadNaUpdate) location.reload(); });
+    controleerCache();
   } catch (e) {
     console.warn('Service worker niet geregistreerd:', e);
   }
@@ -742,7 +764,7 @@ async function start() {
     if (melding) { if (melding.over > 0) melding.over -= 1; else melding = null; }
     toon();
   });
-  window.addEventListener('online', () => { werkBalkBij(); sync.verwerk({ handmatig: true }); });
+  window.addEventListener('online', () => { werkBalkBij(); sync.verwerk({ handmatig: true }); controleerCache(); });
   window.addEventListener('offline', () => werkBalkBij());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) sync.verwerk(); });
   setInterval(() => sync.verwerk(), 60 * 1000);

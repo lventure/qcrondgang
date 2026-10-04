@@ -330,6 +330,92 @@ test('keuzelijsten: heeft de lege rij geen validatie, dan telt de rij erboven', 
   assert.strictEqual(v.lotZkCorrect.soort, 'vakje');
 });
 
+test('met de Sheets API: zelfde snapshot, zonder de bronsheets te openen', () => {
+  const gewoon = opzet().post({ actie: 'snapshot' });
+  const fx = maakFixture();
+  const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst: true });
+  script.roep('installeer');
+  script.teller.openById = 0; script.teller.api = 0;
+  const s = script.post({ sleutel: script.props.SLEUTEL, actie: 'snapshot' });
+  assert.strictEqual(s.ok, true, s.fout);
+  assert.deepStrictEqual(s.bron, { orders: 'Sheets API', pallets: 'Sheets API' });
+  assert.deepStrictEqual(s.orders, gewoon.orders);
+  assert.deepStrictEqual(s.pallets, gewoon.pallets);
+  assert.deepStrictEqual(s.velden, gewoon.velden);
+  assert.deepStrictEqual(s.waarschuwingen, []);
+  assert.strictEqual(script.teller.openById, 0, 'geen enkele bronsheet geopend');
+  assert.strictEqual(script.teller.api, 1 + 10 + 1 + 6 + 2, 'per bron de koprijen en de nodige kolommen, plus twee kolommen van het QC-tabblad');
+});
+
+test('Sheets API zonder toegang: de tragere weg neemt over en de app krijgt een waarschuwing', () => {
+  const fx = maakFixture();
+  const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst: true });
+  script.roep('installeer');
+  script.teller.apiToegang = false;
+  const s = script.post({ sleutel: script.props.SLEUTEL, actie: 'snapshot' });
+  assert.strictEqual(s.ok, true, s.fout);
+  assert.deepStrictEqual(s.bron, { orders: 'rechtstreeks', pallets: 'rechtstreeks' });
+  assert.strictEqual(s.orders.length, 5);
+  assert.strictEqual(s.waarschuwingen.length, 2);
+  assert.ok(/Sheets API mislukte/.test(s.waarschuwingen[0]));
+});
+
+test('schrijven met de Sheets API: zelfde rijen als zonder, en geen kolom meer via SpreadsheetApp doorzocht', () => {
+  const fx = maakFixture();
+  const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst: true });
+  script.roep('installeer');
+  const post = (obj) => script.post({ sleutel: script.props.SLEUTEL, ...obj });
+  const w = (r, l) => fx.tab.waarde(r, letterNaarKolom(l));
+  script.teller.api = 0;
+  assert.deepStrictEqual(post({ actie: 'controle', appId: ID1, ...BOVEN }), { ok: true, appId: ID1, deel: 'boven', rij: 5, nieuw: true });
+  assert.strictEqual(script.teller.api, 3, 'één verzoek met drie kolommen');
+  assert.deepStrictEqual(post({ actie: 'controle', appId: ID1, ...BENEDEN }), { ok: true, appId: ID1, deel: 'beneden', rij: 5, nieuw: false });
+  assert.strictEqual(post({ actie: 'controle', appId: ID2, ...BOVEN, code: '50001' }).rij, 6);
+  assert.strictEqual(post({ actie: 'controle', appId: ID2, ...BOVEN, code: '50001' }).rij, 6);
+  assert.strictEqual(post({ actie: 'controle', appId: '44444444-4444-4444-8444-444444444444', ...BOVEN, code: '260103' }).rij, 7);
+  // geen voorbereide rijen meer: rij erbij
+  assert.strictEqual(post({ actie: 'controle', appId: '55555555-5555-4555-8555-555555555555', ...BOVEN, code: '260104' }).rij, 8);
+  assert.strictEqual(fx.tab.getMaxRows(), 8);
+  assert.deepStrictEqual([w(5, 'I'), w(5, 'AS'), w(5, 'Q'), w(6, 'I'), w(7, 'I'), w(8, 'I'), w(8, 'AS')], [260102, 7, 'AB', 50001, 260103, 260104, 7]);
+});
+
+test('Sheets API loopt achter en wijst een bezette rij aan: niets overschreven, de tablet probeert opnieuw', () => {
+  const fx = maakFixture();
+  const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst: true });
+  script.roep('installeer');
+  const post = (obj) => script.post({ sleutel: script.props.SLEUTEL, ...obj });
+  const w = (r, l) => fx.tab.waarde(r, letterNaarKolom(l));
+  post({ actie: 'controle', appId: ID1, ...BOVEN });
+  script.teller.apiVerberg = 5; // de API ziet rij 5 nog als leeg
+  const a = post({ actie: 'controle', appId: ID2, ...BOVEN, code: '50001' });
+  assert.deepStrictEqual([a.ok, a.code, a.tijdelijk], [false, 'BEZET', true]);
+  assert.deepStrictEqual([w(5, 'I'), w(5, 'AY'), w(6, 'I')], [260102, ID1, '']);
+  assert.strictEqual(script.slot.bezet, false);
+  script.teller.apiVerberg = 0;
+  assert.strictEqual(post({ actie: 'controle', appId: ID2, ...BOVEN, code: '50001' }).rij, 6);
+});
+
+test('meet() schrijft niets en meet de drie wegen', () => {
+  const fx = maakFixture();
+  const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst: true });
+  script.roep('installeer');
+  const beeld = () => JSON.stringify([...fx.tab.cellen].map(([k, x]) => [k, x.v instanceof Date ? x.v.getTime() : x.v, x.f]));
+  const voor = beeld();
+  script.logboek.length = 0;
+  script.roep('meet');
+  assert.strictEqual(beeld(), voor);
+  const log = script.logboek.join('\n');
+  assert.ok(/=== Zoals de app ze krijgt \(Sheets API staat aan\): \d+ ms, 5 orders \(Sheets API\), 4 pallets \(Sheets API\)/.test(log), log);
+  assert.ok(/=== Bronsheets via SpreadsheetApp: \d+ ms, 5 orders \(rechtstreeks\)/.test(log), log);
+  assert.ok(/=== Importtabbladen in de QC-sheet: \d+ ms, FOUT/.test(log), 'importtabbladen zijn leeg in de nep');
+  assert.ok(/Verschil "Bronsheets via SpreadsheetApp" tegenover de eerste weg: 0 codes ontbreken, 0 codes extra/.test(log), log);
+  assert.ok(/=== Leeswerk voor een schrijfactie: \d+ ms/.test(log));
+  assert.ok(!log.includes(script.props.SLEUTEL), 'geen sleutel in het logboek');
+  assert.ok(!/Voorbeeld|Testklant/.test(log), 'geen productnamen in het logboek');
+  // na meet() staat de klok weer uit
+  assert.strictEqual(script.post({ sleutel: script.props.SLEUTEL, actie: 'snapshot' }).ok, true);
+});
+
 test('ongeldige verzoeken worden geweigerd', () => {
   const { post } = opzet();
   assert.strictEqual(post({ actie: 'controle', appId: 'abc', ...BOVEN }).code, 'VERZOEK');

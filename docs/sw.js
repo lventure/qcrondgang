@@ -40,8 +40,21 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
+/**
+ * Vult de cache weer aan als er bestanden ontbreken. Nodig omdat andere apps
+ * op dezelfde oorsprong (Palletscan) de cache van deze app kunnen wissen.
+ */
+async function vulCacheAan() {
+  const cache = await caches.open(CACHE);
+  const ontbreekt = [];
+  for (const u of BESTANDEN) if (!(await cache.match(u))) ontbreekt.push(u);
+  if (ontbreekt.length) await cache.addAll(ontbreekt.map((u) => new Request(u, { cache: 'reload' })));
+  return ontbreekt.length;
+}
+
 self.addEventListener('message', (event) => {
   if (event.data === 'nieuwe-versie') self.skipWaiting();
+  if (event.data === 'controleer-cache') event.waitUntil(vulCacheAan().catch(() => { /* geen verbinding: later opnieuw */ }));
 });
 
 self.addEventListener('fetch', (event) => {
@@ -58,7 +71,10 @@ self.addEventListener('fetch', (event) => {
       const start = await cache.match('./index.html');
       if (start) return start;
     }
-    return fetch(verzoek);
+    // Niet in de cache (gewist door een andere app?): ophalen en opnieuw bewaren.
+    const antwoord = await fetch(verzoek);
+    if (antwoord.ok) cache.put(verzoek, antwoord.clone()).catch(() => { /* niet erg */ });
+    return antwoord;
   })());
 });
 

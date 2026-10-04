@@ -12,7 +12,7 @@ export class ApiFout extends Error {
   }
 }
 
-export async function roep(actie, data = {}, { timeout = 30000 } = {}) {
+export async function roep(actie, data = {}, { timeout = 90000 } = {}) {
   const url = await instelling('url');
   const sleutel = await instelling('sleutel');
   if (!url || !sleutel) throw new ApiFout('Adres of sleutel is niet ingesteld.', { code: 'INSTELLING' });

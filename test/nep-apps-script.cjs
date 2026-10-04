@@ -142,14 +142,58 @@ class NepBereik {
 class NepSpreadsheet {
   constructor(naam) { this.naam = naam; this.tabs = new Map(); }
   getName() { return this.naam; }
+  getId() { return this.id || 'NEP-QC-SHEET'; }
   getSpreadsheetTimeZone() { return 'Europe/Brussels'; }
   getSheetByName(n) { return this.tabs.get(n) || null; }
   nieuwTab(naam, rijen, kolommen) { const t = new NepTab(naam, rijen, kolommen); this.tabs.set(naam, t); return t; }
 }
 
 /** Laadt Code.gs in een eigen context met de nagebootste Google-diensten. */
-function laadScript({ actief, opId, eigenschappen = {} }) {
+/** Nagebootste geavanceerde dienst "Google Sheets API" (alleen Values.get en Values.batchGet). */
+function nepSheetsDienst(opId, teller, magLezen) {
+  function lees(id, bereik, opties) {
+    teller.api += 1;
+    const ss = opId[id];
+    if (!ss || !magLezen()) throw new Error('API call to sheets.spreadsheets.values.get failed with error: The caller does not have permission');
+    const m = /^'((?:[^']|'')+)'!(.+)$/.exec(bereik);
+    const tab = ss.getSheetByName(m[1].replace(/''/g, "'"));
+    if (!tab) throw new Error('Unable to parse range: ' + bereik);
+    const laatsteRij = tab.getLastRow();
+    const laatsteKolom = tab.getLastColumn();
+    let waarden;
+    let r = /^(\d+):(\d+)$/.exec(m[2]);
+    if (r) {
+      waarden = [];
+      for (let rij = Number(r[1]); rij <= Math.min(Number(r[2]), laatsteRij); rij++) {
+        const regel = [];
+        for (let c = 1; c <= laatsteKolom; c++) regel.push(tab.toon(rij, c));
+        while (regel.length && regel[regel.length - 1] === '') regel.pop();
+        waarden.push(regel);
+      }
+      while (waarden.length && !waarden[waarden.length - 1].length) waarden.pop();
+    } else {
+      r = /^([A-Z]+)(\d+):([A-Z]+)$/.exec(m[2]);
+      if (!r || r[1] !== r[3]) throw new Error('Nep: bereik niet nagebootst: ' + bereik);
+      const kolom = [];
+      for (let rij = Number(r[2]); rij <= laatsteRij; rij++) kolom.push(rij === teller.apiVerberg ? '' : tab.toon(rij, letterNaarKolom(r[1])));
+      while (kolom.length && kolom[kolom.length - 1] === '') kolom.pop();
+      if (opties.majorDimension !== 'COLUMNS') throw new Error('Nep: alleen COLUMNS nagebootst voor kolombereiken');
+      waarden = kolom.length ? [kolom] : undefined;
+    }
+    if (opties.valueRenderOption !== 'FORMATTED_VALUE') throw new Error('Nep: alleen FORMATTED_VALUE nagebootst');
+    const uit = { range: bereik };
+    if (waarden && waarden.length) uit.values = waarden;
+    return uit;
+  }
+  return { Spreadsheets: { Values: {
+    get: (id, bereik, opties) => lees(id, bereik, opties || {}),
+    batchGet: (id, opties) => ({ spreadsheetId: id, valueRanges: opties.ranges.map((b) => lees(id, b, opties)) })
+  } } };
+}
+
+function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) {
   const props = { ...eigenschappen };
+  const teller = { openById: 0, api: 0, apiToegang: true, apiVerberg: 0 };
   const logboek = [];
   let uuidTeller = 0;
   const slot = { bezet: false };
@@ -158,6 +202,7 @@ function laadScript({ actief, opId, eigenschappen = {} }) {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => actief,
       openById: (id) => {
+        teller.openById += 1;
         if (!opId[id]) throw new Error('Je hebt geen toegang tot het document ' + id);
         return opId[id];
       },
@@ -182,6 +227,7 @@ function laadScript({ actief, opId, eigenschappen = {} }) {
     },
     Logger: { log: (x) => logboek.push(String(x)) }
   };
+  if (sheetsDienst) sandbox.Sheets = nepSheetsDienst({ ...opId, [actief.getId()]: actief }, teller, () => teller.apiToegang);
   vm.createContext(sandbox);
   const bron = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
   // const/let op het hoogste niveau zijn niet zichtbaar als eigenschap; functies wel.
@@ -189,7 +235,7 @@ function laadScript({ actief, opId, eigenschappen = {} }) {
   return {
     post: (obj) => JSON.parse(sandbox.doPost({ postData: { contents: typeof obj === 'string' ? obj : JSON.stringify(obj) } }).tekst),
     roep: (naam, ...args) => vm.runInContext(naam, sandbox)(...args),
-    props, logboek, slot
+    props, logboek, slot, teller
   };
 }
 

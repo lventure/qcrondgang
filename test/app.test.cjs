@@ -540,6 +540,27 @@ async function scenario(naam, fn) {
     assert.strictEqual(w(5, 'AS'), 11);
   });
 
+  await scenario('een andere app op dezelfde oorsprong wist de cache (Palletscan): de app herstelt zich en start weer zonder verbinding', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    const aantal = () => page.evaluate(async () => { const n = (await caches.keys()).find((k) => k.startsWith('qc-rondgang-')); return n ? (await (await caches.open(n)).keys()).length : 0; });
+    assert.strictEqual(await aantal(), 13);
+    // wat de service worker van Palletscan doet bij activeren: alle andere caches weg
+    await page.evaluate(async () => { for (const k of await caches.keys()) await caches.delete(k); });
+    assert.strictEqual(await aantal(), 0);
+    await page.reload();
+    await page.waitForSelector('#tegel-controles');
+    for (let i = 0; i < 50 && (await aantal()) < 13; i++) await page.waitForTimeout(100);
+    assert.strictEqual(await aantal(), 13, 'cache weer volledig');
+    await page.goto(srv.appUrl + '#/instellingen');
+    await page.waitForSelector('#inst-offline');
+    assert.match(await page.textContent('#inst-offline'), /bewaard: ja \(13 bestanden\)/);
+    await ctx.setOffline(true);
+    await page.goto(srv.appUrl);
+    await page.reload();
+    await page.waitForSelector('#tegel-controles');
+  });
+
   await scenario('app gesloten: Background Sync verzendt de wachtrij vanuit de service worker', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);

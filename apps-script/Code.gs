@@ -29,7 +29,7 @@ const INST = {
   ORDER_UIT: ['klaar'],
   PALLET_UIT: ['klaar', 'niet gebruikt', 'shipped', 'vernietigd'],
   WACHT_OP_SLOT_MS: 20000,
-  VERSIE: '1.0.0'
+  VERSIE: '1.2.0'
 };
 
 /**
@@ -211,6 +211,8 @@ function kolommenOfFout_(tab) {
 
 /** Eerste rij na de laatste rij waarin Tijdstempel of code ingevuld is. */
 function vrijeRij_(tab, kol) {
+  const api = qcKolommenApi_(tab, [kol.tijdstempel, kol.code]);
+  if (api) return INST.EERSTE_RIJ + Math.max(gevuld_(api[0]), gevuld_(api[1]));
   const max = tab.getMaxRows();
   const n = max - INST.EERSTE_RIJ + 1;
   let laatste = INST.EERSTE_RIJ - 1;
@@ -224,18 +226,79 @@ function vrijeRij_(tab, kol) {
   return laatste + 1;
 }
 
+/**
+ * Leest hele kolommen van het QC-tabblad (vanaf de eerste datarij) via de
+ * Sheets API. Via SpreadsheetApp kost dat op deze sheet ongeveer 3 seconden per
+ * kolom, via de API een halve seconde voor alle kolommen samen.
+ * Geeft null als de dienst niet aanstaat of het verzoek mislukt; de aanroeper
+ * leest dan via SpreadsheetApp.
+ */
+function qcKolommenApi_(tab, kolommen) {
+  if (typeof Sheets === 'undefined') return null;
+  try {
+    const voor = "'" + tab.getName().replace(/'/g, "''") + "'!";
+    const bereiken = kolommen.map(function (c) { return voor + letter_(c) + INST.EERSTE_RIJ + ':' + letter_(c); });
+    const antwoord = Sheets.Spreadsheets.Values.batchGet(SpreadsheetApp.getActiveSpreadsheet().getId(),
+      { ranges: bereiken, valueRenderOption: 'FORMATTED_VALUE', majorDimension: 'COLUMNS' });
+    const uit = (antwoord.valueRanges || []).map(function (vr) { return (vr.values && vr.values[0]) || []; });
+    return uit.length === kolommen.length ? uit : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** Aantal rijen tot en met de laatste ingevulde cel van een kolom. */
+function gevuld_(kolom) {
+  let n = kolom.length;
+  while (n > 0 && String(kolom[n - 1] == null ? '' : kolom[n - 1]) === '') n--;
+  return n;
+}
+
+/**
+ * Voor een schrijfactie: de rij van dit app-ID (0 als ze nog niet bestaat) en
+ * de eerste vrije rij. Met de Sheets API in één verzoek.
+ */
+function zoekRijen_(tab, kol, appId) {
+  const api = qcKolommenApi_(tab, [kol.appId, kol.tijdstempel, kol.code]);
+  if (api) {
+    const i = api[0].indexOf(appId);
+    return { rij: i === -1 ? 0 : INST.EERSTE_RIJ + i, vrij: INST.EERSTE_RIJ + Math.max(gevuld_(api[1]), gevuld_(api[2])), weg: 'Sheets API' };
+  }
+  const rij = zoekAppId_(tab, kol, appId);
+  return { rij: rij, vrij: rij ? 0 : vrijeRij_(tab, kol), weg: 'SpreadsheetApp' };
+}
+
 function nvtFormule_(kol, veld, rij) {
   return '=IF(' + letter_(kol[veld.nvtAls]) + rij + '="nee";"NVT";)';
+}
+
+/* ------------------------------------------------------------------ */
+/* Tijdmeting (alleen actief tijdens meet())                           */
+/* ------------------------------------------------------------------ */
+
+let KLOK_ = null;
+
+function tik_(naam) {
+  if (!KLOK_) return;
+  const nu = Date.now();
+  KLOK_.regels.push(('       ' + (nu - KLOK_.vorige)).slice(-7) + ' ms  ' + naam);
+  KLOK_.vorige = nu;
 }
 
 /* ------------------------------------------------------------------ */
 /* snapshot                                                            */
 /* ------------------------------------------------------------------ */
 
-function snapshot_() {
+/**
+ * dwing (alleen voor meet()): 'app' = bronsheets via SpreadsheetApp,
+ * 'import' = de importtabbladen. Zonder dwing: de snelste weg die werkt.
+ */
+function snapshot_(dwing) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const tab = qcTab_();
+  tik_('QC-sheet openen');
   const k = kolommen_(tab);
+  tik_('QC-tabblad: koprij lezen');
   const waarschuwingen = [];
   k.fouten.forEach(function (f) { waarschuwingen.push(f); });
 
@@ -247,7 +310,7 @@ function snapshot_() {
       lotGrd: 'lotgrd', lotZk: 'lotzk', allergenen: 'allergenen'
     },
     verplicht: ['code', 'status', 'product']
-  }, waarschuwingen);
+  }, waarschuwingen, dwing);
 
   const pallets = leesBron_(ss, INST.TAB_IMPORT_PALLETS, {
     anker: ['palletnummer', 'toestand'],
@@ -256,7 +319,7 @@ function snapshot_() {
       lot: 'asnlotn°', check1: 'check1', allergenen: 'allergenen'
     },
     verplicht: ['code', 'toestand', 'artikel']
-  }, waarschuwingen);
+  }, waarschuwingen, dwing);
 
   const ordersUit = orders.rijen.filter(function (r) {
     return r.code && r.product && INST.ORDER_UIT.indexOf(r.status.toLowerCase()) === -1;
@@ -280,40 +343,101 @@ function snapshot_() {
     };
   });
 
+  const velden = k.fouten.length ? {} : leesVelden_(tab, k);
   return {
     ok: true,
     om: new Date().toISOString(),
     scriptVersie: INST.VERSIE,
     orders: ordersUit,
     pallets: palletsUit,
-    velden: k.fouten.length ? {} : leesVelden_(tab, k),
+    velden: velden,
     bron: { orders: orders.bron, pallets: pallets.bron },
     waarschuwingen: waarschuwingen
   };
 }
 
 /**
- * Leest een bronsheet. Eerst rechtstreeks (via de IMPORTRANGE-formule van het
- * importtabblad), en als dat niet lukt uit het importtabblad zelf.
+ * Leest een bronsheet. Drie wegen, in volgorde van voorkeur:
+ *   1. Sheets API (alleen als de dienst "Google Sheets API" in de editor is
+ *      toegevoegd): leest de bronsheet zonder ze helemaal te openen;
+ *   2. SpreadsheetApp: opent de bronsheet zelf (traag bij een zware sheet);
+ *   3. het importtabblad in de QC-sheet (kan verouderd zijn).
  */
-function leesBron_(ss, importNaam, def, waarschuwingen) {
+function leesBron_(ss, importNaam, def, waarschuwingen, dwing) {
   const importTab = ss.getSheetByName(importNaam);
+  if (!importTab) throw new Error('Tabblad niet gevonden: ' + importNaam);
+  let verwijzing = null;
+  if (dwing !== 'import') {
+    try { verwijzing = importVerwijzing_(importTab); } catch (err) { verwijzing = null; }
+    tik_(importNaam + ': IMPORTRANGE-formule lezen');
+  }
+
+  if (verwijzing && !dwing && typeof Sheets !== 'undefined') {
+    try {
+      const rijenApi = leesTabelApi_(verwijzing.id, verwijzing.tab, def, waarschuwingen, importNaam);
+      return { rijen: rijenApi, bron: 'Sheets API' };
+    } catch (err) {
+      tik_(importNaam + ': Sheets API mislukt');
+      waarschuwingen.push('"' + importNaam + '": lezen via de Sheets API mislukte (' + err.message + '); de tragere weg is gebruikt.');
+    }
+  }
+
   let bronTab = null;
   let bron = 'rechtstreeks';
-  try {
-    const verwijzing = importTab ? importVerwijzing_(importTab) : null;
-    if (verwijzing) bronTab = SpreadsheetApp.openById(verwijzing.id).getSheetByName(verwijzing.tab);
-  } catch (err) {
-    bronTab = null;
+  if (verwijzing) {
+    try { bronTab = SpreadsheetApp.openById(verwijzing.id).getSheetByName(verwijzing.tab); } catch (err) { bronTab = null; }
+    tik_(importNaam + ': bronsheet openen');
   }
   if (!bronTab) {
-    if (!importTab) throw new Error('Tabblad niet gevonden: ' + importNaam);
     bronTab = importTab;
     bron = 'importtabblad';
-    waarschuwingen.push('"' + importNaam + '": de bronsheet kon niet rechtstreeks gelezen worden; het importtabblad is gebruikt en kan verouderd zijn.');
+    if (dwing !== 'import') waarschuwingen.push('"' + importNaam + '": de bronsheet kon niet rechtstreeks gelezen worden; het importtabblad is gebruikt en kan verouderd zijn.');
   }
   const rijen = leesTabel_(bronTab, def, waarschuwingen, importNaam);
   return { rijen: rijen, bron: bron };
+}
+
+/**
+ * Zelfde resultaat als leesTabel_, maar via de Sheets API: twee verzoeken per
+ * bronsheet (koprijen, daarna alleen de nodige kolommen).
+ */
+function leesTabelApi_(id, tabNaam, def, waarschuwingen, naam) {
+  const voor = "'" + String(tabNaam).replace(/'/g, "''") + "'!";
+  const kop = Sheets.Spreadsheets.Values.get(id, voor + '1:5', { valueRenderOption: 'FORMATTED_VALUE' }).values || [];
+  tik_(naam + ': koprijen via Sheets API');
+  let kopRij = -1;
+  let genormd = null;
+  for (let r = 0; r < kop.length; r++) {
+    const g = kop[r].map(norm_);
+    if (def.anker.every(function (a) { return g.indexOf(a) !== -1; })) { kopRij = r + 1; genormd = g; break; }
+  }
+  if (kopRij === -1) throw new Error('koprij niet gevonden (gezocht: ' + def.anker.join(', ') + ')');
+
+  const sleutels = [];
+  const bereiken = [];
+  Object.keys(def.kolommen).forEach(function (sleutel) {
+    const c = genormd.indexOf(def.kolommen[sleutel]);
+    if (c === -1) {
+      if (def.verplicht.indexOf(sleutel) !== -1) throw new Error('kolom "' + def.kolommen[sleutel] + '" niet gevonden');
+      waarschuwingen.push('"' + naam + '": kolom "' + def.kolommen[sleutel] + '" niet gevonden; dat veld blijft leeg.');
+      return;
+    }
+    sleutels.push(sleutel);
+    bereiken.push(voor + letter_(c + 1) + (kopRij + 1) + ':' + letter_(c + 1));
+  });
+  const antwoord = Sheets.Spreadsheets.Values.batchGet(id, { ranges: bereiken, valueRenderOption: 'FORMATTED_VALUE', majorDimension: 'COLUMNS' });
+  tik_(naam + ': ' + bereiken.length + ' kolommen via Sheets API');
+  const kolommen = (antwoord.valueRanges || []).map(function (vr) { return (vr.values && vr.values[0]) || []; });
+  if (kolommen.length !== sleutels.length) throw new Error('onvolledig antwoord van de Sheets API');
+  let aantal = 0;
+  kolommen.forEach(function (k) { if (k.length > aantal) aantal = k.length; });
+  const rijen = [];
+  for (let r = 0; r < aantal; r++) {
+    const rij = {};
+    sleutels.forEach(function (sleutel, i) { rij[sleutel] = schoon_(kolommen[i][r]); });
+    rijen.push(rij);
+  }
+  return rijen;
 }
 
 /** Haalt spreadsheet-ID en tabbladnaam uit =IMPORTRANGE("...";"Tab!A:Z"). */
@@ -336,8 +460,10 @@ function leesTabel_(tab, def, waarschuwingen, naam) {
   const breedte = tab.getLastColumn();
   // Een leeg blad is nooit juist: liever een fout dan een lege lijst, zodat de
   // app haar vorige gegevens houdt.
+  tik_(naam + ': afmetingen opvragen (' + laatsteRij + ' rijen x ' + breedte + ' kolommen)');
   if (laatsteRij < 1 || breedte < 1) throw new Error('"' + naam + '": het blad is leeg.');
   const kopRijen = tab.getRange(1, 1, Math.min(5, laatsteRij), breedte).getDisplayValues();
+  tik_(naam + ': koprijen lezen');
   let kopRij = -1;
   let genormd = null;
   for (let r = 0; r < kopRijen.length; r++) {
@@ -358,6 +484,7 @@ function leesTabel_(tab, def, waarschuwingen, naam) {
       return;
     }
     data[sleutel] = tab.getRange(eerste, c + 1, aantal, 1).getDisplayValues();
+    tik_(naam + ': kolom ' + letter_(c + 1) + ' lezen');
   });
 
   const rijen = [];
@@ -375,10 +502,12 @@ function leesTabel_(tab, def, waarschuwingen, naam) {
  */
 function leesVelden_(tab, k) {
   const rij = Math.min(vrijeRij_(tab, k.kol), tab.getMaxRows());
+  tik_('QC-tabblad: eerste vrije rij zoeken (rij ' + rij + ')');
   const breedte = tab.getLastColumn();
   const regels = tab.getRange(rij, 1, 1, breedte).getDataValidations()[0];
   // Heeft de lege rij geen validatie (voorbereide rijen op), dan telt de rij erboven.
   const erboven = rij > INST.EERSTE_RIJ ? tab.getRange(rij - 1, 1, 1, breedte).getDataValidations()[0] : [];
+  tik_('QC-tabblad: gegevensvalidatie van twee rijen lezen');
   const T = SpreadsheetApp.DataValidationCriteria;
   const uit = {};
   VELDEN.forEach(function (veld) {
@@ -404,6 +533,7 @@ function leesVelden_(tab, k) {
     }
     uit[veld.id] = { kolom: letter_(c), kop: String(k.koppen[c - 1]).trim(), soort: soort, keuzes: keuzes.filter(function (x) { return x !== ''; }) };
   });
+  tik_('QC-tabblad: keuzelijsten uitlezen');
   return uit;
 }
 
@@ -436,14 +566,20 @@ function controle_(v) {
     const tz = ss.getSpreadsheetTimeZone();
 
     // 1. Bestaat het app-ID al?
-    let rij = zoekAppId_(tab, kol, v.appId);
+    const plek = zoekRijen_(tab, kol, v.appId);
+    let rij = plek.rij;
     let nieuw = false;
     if (!rij) {
-      // 2. Nieuwe rij. Het app-ID gaat er eerst in: valt het script hierna
-      //    uit, dan vindt de herhaling dezelfde rij terug en komt er geen dubbel.
-      rij = vrijeRij_(tab, kol);
+      // 2. Nieuwe rij.
+      rij = plek.vrij;
       if (rij > tab.getMaxRows()) nieuweRij_(tab, kol);
       nieuw = true;
+      // Eerst nakijken dat de rij echt leeg is, rechtstreeks in de sheet. Is ze
+      // dat niet, dan wordt er niets geschreven en probeert de tablet opnieuw.
+      const bezet = String(tab.getRange(rij, kol.code).getValue()).trim() !== '' || String(tab.getRange(rij, kol.appId).getValue()).trim() !== '';
+      if (bezet) return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'Rij ' + rij + ' bleek niet leeg; opnieuw proberen.' };
+      // Het app-ID gaat er eerst in: valt het script hierna uit, dan vindt de
+      // herhaling dezelfde rij terug en komt er geen dubbel.
       zetTekst_(tab.getRange(rij, kol.appId), v.appId);
     }
     const codeCel = tab.getRange(rij, kol.code);
@@ -618,6 +754,64 @@ function nakijken() {
     Logger.log(v.kolom + '  ' + id + ': ' + v.soort + (v.keuzes.length ? ' [' + v.keuzes.join(' / ') + ']' : ''));
   });
   if (s.waarschuwingen.length) Logger.log('WAARSCHUWINGEN: ' + s.waarschuwingen.join(' | '));
+}
+
+/**
+ * Schrijft niets. Meet hoe lang elke stap van de snapshot duurt, langs elke
+ * weg, en hoe lang het leeswerk voor een schrijfactie duurt. Het logboek
+ * bevat geen sleutel en geen product- of klantnamen.
+ */
+function meet() {
+  const wegen = [
+    ['Zoals de app ze krijgt (' + (typeof Sheets !== 'undefined' ? 'Sheets API staat aan' : 'Sheets API staat NIET aan') + ')', undefined],
+    ['Bronsheets via SpreadsheetApp', 'app'],
+    ['Importtabbladen in de QC-sheet', 'import']
+  ];
+  const codes = {};
+  wegen.forEach(function (weg) {
+    KLOK_ = { vorige: Date.now(), regels: [] };
+    const start = Date.now();
+    let s = null;
+    let fout = '';
+    try { s = snapshot_(weg[1]); } catch (err) { fout = err.message; }
+    const regels = KLOK_.regels;
+    KLOK_ = null;
+    Logger.log('=== ' + weg[0] + ': ' + (Date.now() - start) + ' ms' +
+      (s ? ', ' + s.orders.length + ' orders (' + s.bron.orders + '), ' + s.pallets.length + ' pallets (' + s.bron.pallets + ')' : ', FOUT: ' + fout));
+    regels.forEach(function (r) { Logger.log(r); });
+    if (s && s.waarschuwingen.length) Logger.log('    waarschuwingen: ' + s.waarschuwingen.length);
+    if (s) codes[weg[0]] = s.orders.map(function (o) { return o.code; }).concat(s.pallets.map(function (p) { return p.code; }));
+  });
+
+  // Zijn de importtabbladen even vers als de bronsheets?
+  const namen = Object.keys(codes);
+  if (namen.length > 1) {
+    const basis = codes[namen[0]];
+    namen.slice(1).forEach(function (n) {
+      const ander = codes[n];
+      const mist = basis.filter(function (c) { return ander.indexOf(c) === -1; }).length;
+      const extra = ander.filter(function (c) { return basis.indexOf(c) === -1; }).length;
+      Logger.log('Verschil "' + n + '" tegenover de eerste weg: ' + mist + ' codes ontbreken, ' + extra + ' codes extra');
+    });
+  }
+
+  // Leeswerk van een schrijfactie (er wordt niets geschreven).
+  KLOK_ = { vorige: Date.now(), regels: [] };
+  const start = Date.now();
+  const tab = qcTab_();
+  tik_('QC-tabblad openen');
+  const k = kolommen_(tab);
+  tik_('koprij lezen');
+  if (!k.fouten.length) {
+    const plek = zoekRijen_(tab, k.kol, '00000000-0000-4000-8000-000000000000');
+    tik_('app-ID en eerste vrije rij zoeken via ' + plek.weg + ' (rij ' + plek.vrij + ')');
+    tab.getRange(plek.vrij <= tab.getMaxRows() ? plek.vrij : tab.getMaxRows(), k.kol.code).getValue();
+    tik_('nakijken dat die rij leeg is');
+  }
+  const regels = KLOK_.regels;
+  KLOK_ = null;
+  Logger.log('=== Leeswerk voor een schrijfactie: ' + (Date.now() - start) + ' ms');
+  regels.forEach(function (r) { Logger.log(r); });
 }
 
 /** Maakt een nieuwe sleutel. De oude werkt daarna niet meer. */

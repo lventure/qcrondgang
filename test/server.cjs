@@ -21,7 +21,8 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
     verzoeken: [],     // alle ontvangen acties
     reset(opties) {
       this.fx = maakFixture(opties);
-      this.script = laadScript({ actief: this.fx.qc, opId: this.fx.opId });
+      // QC_SHEETS=1: met de nagebootste Sheets API, zoals op de echte sheet.
+      this.script = laadScript({ actief: this.fx.qc, opId: this.fx.opId, sheetsDienst: process.env.QC_SHEETS === '1' });
       this.script.roep('installeer');
       this.sleutel = this.script.props.SLEUTEL;
       this.verlies = 0; this.html = 0; this.preflights = 0; this.verzoeken = [];

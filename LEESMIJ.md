@@ -20,21 +20,22 @@ Doe dit op de testkopie, niet op de echte sheet.
 
 1. Open de testkopie en kies Extensies > Apps Script.
 2. Wis de inhoud van `Code.gs` in de editor en plak de inhoud van `apps-script/Code.gs`. Bewaar.
-3. Kies bovenaan de functie `installeer` en klik op Uitvoeren. Google vraagt één keer toestemming; het script heeft toegang nodig tot deze sheet en tot de twee bronsheets.
-4. Open het uitvoeringslogboek. Daar staat:
+3. Voeg de dienst Google Sheets API toe: links in de editor bij Diensten op + klikken, Google Sheets API kiezen, Toevoegen. Zonder die dienst werkt het script ook, maar veel trager. Gemeten met `meet` op 4 oktober 2026: orders en pallets ophalen duurt 2 seconden via de Sheets API en 62 seconden zonder.
+4. Kies bovenaan de functie `installeer` en klik op Uitvoeren. Google vraagt één keer toestemming; het script heeft toegang nodig tot deze sheet en tot de twee bronsheets.
+5. Open het uitvoeringslogboek. Daar staat:
    - welke kolommen toegevoegd zijn (tien kolommen rechts van AX, vanaf AY);
    - de regel `SLEUTEL (ingeven op de tablet, niet delen): …`. Noteer die.
    - per controlepunt de gevonden kolomletter en de keuzelijst;
    - het aantal orders en pallets, en of ze rechtstreeks uit de bronsheets komen.
-5. Kijk dat logboek na voor je verdergaat. Dit is de eerste keer dat het script tegen een echte Google Sheet draait. Let op:
+6. Kijk dat logboek na voor je verdergaat. Dit is de eerste keer dat het script tegen een echte Google Sheet draait. Let op:
    - geen regel met `??` of `FOUTEN`;
    - de kolomletters kloppen met het bouwplan (L, N, Q, R, S … AU);
    - bij elke keuzelijst staan de juiste keuzes;
-   - orders en pallets komen `rechtstreeks`, niet uit het `importtabblad`;
+   - orders en pallets komen via `Sheets API` (of `rechtstreeks`), niet uit het `importtabblad`;
    - de aantallen liggen in de buurt van wat je verwacht (op 2 oktober 132 orders en 68 pallets).
-6. Kies Implementeren > Nieuwe implementatie > type Web-app. Uitvoeren als: Ik. Toegang: Iedereen. Kopieer het adres dat eindigt op `/exec`.
+7. Kies Implementeren > Nieuwe implementatie > type Web-app. Uitvoeren als: Ik. Toegang: Iedereen. Kopieer het adres dat eindigt op `/exec`.
 
-`installeer` mag je opnieuw uitvoeren: bestaande kolommen en de bestaande sleutel blijven. `nakijken` doet alleen de controle van punt 5 en schrijft niets. Na elke wijziging aan de code: Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft dan hetzelfde.
+`installeer` mag je opnieuw uitvoeren: bestaande kolommen en de bestaande sleutel blijven. `nakijken` doet alleen de controle van punt 6 en schrijft niets. `meet` schrijft ook niets en toont hoe lang elke stap van het ophalen duurt; het logboek van `meet` bevat geen sleutel en geen namen. Na elke wijziging aan de code: Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft dan hetzelfde.
 
 ## Stap 2: de app op GitHub Pages
 
@@ -42,7 +43,7 @@ Doe dit op de testkopie, niet op de echte sheet.
 2. Zet de inhoud van deze map erin. Werk met git vanuit een gewone lokale map, niet vanuit Google Drive: Drive en de map `.git` gaan slecht samen.
 3. Settings > Pages > Deploy from a branch > `main`, map `/docs`.
 4. De app staat dan op `https://<account>.github.io/qc-rondgang/`.
-5. Kijk na dat de service worker van Palletscan alleen zijn eigen pad dekt. Een service worker die vanaf de hoofdmap van `<account>.github.io` geregistreerd is, zou ook deze app onderscheppen.
+5. Palletscan staat op hetzelfde adres (`<account>.github.io`) en deelt dus de opslag van de browser. Nagekeken op 4 oktober 2026: zijn manifest is juist begrensd (`scope` is `./`), maar zijn service worker wist bij elke nieuwe versie alle caches behalve de zijne, dus ook die van deze app. Deze app herstelt zich daarvan zodra ze met verbinding geopend wordt (Instellingen toont of ze op de tablet bewaard is). Beter is het in Palletscan zelf op te lossen: in `sw.js` alleen caches wissen waarvan de naam met `palletscan-` begint.
 
 `apps-script/` en `test/` mogen mee in de repository; er staat niets vertrouwelijks in. Wil je alleen de app publiek, zet dan alleen `docs/` erin.
 
@@ -70,14 +71,14 @@ Deze punten uit hoofdstuk 11 van het bouwplan zijn op de echte tablet en tegen d
 
 ## Wat getest is en wat niet
 
-Getest, hier in de bouwomgeving: 26 tests van `Code.gs` tegen een nagebootste sheet met de echte koppen, en 16 scenario's van de app in Chromium (vliegtuigmodus, heropenen, verloren bevestiging, dubbel verzoek, automatische NVT, verversen, corrigeren, verwijderen, Background Sync). Ze slagen allemaal.
+Getest, hier in de bouwomgeving: 31 tests van `Code.gs` tegen een nagebootste sheet met de echte koppen, en 17 scenario's van de app in Chromium (vliegtuigmodus, heropenen, verloren bevestiging, dubbel verzoek, automatische NVT, verversen, corrigeren, verwijderen, gewiste cache, Background Sync). Ze slagen allemaal.
 
 Niet getest: het script is nooit tegen Google zelf uitgevoerd, en de app nooit op de tablet. De nagebootste sheet bewijst de logica, niet het gedrag van Google. Vier dingen zijn daarom pas zeker na stap 1 en stap 4:
 
 - of Google de NVT-formule met puntkomma's aanvaardt bij het terugzetten (test 6);
 - of een opmerking die met `=`, `+` of `-` begint als tekst in de cel komt (test 9);
 - of het script de twee bronsheets rechtstreeks kan openen met jouw account;
-- hoe lang een snapshot duurt. De app wacht 45 seconden; intussen blijft ze bruikbaar met de vorige gegevens.
+- hoe lang een snapshot en een schrijfactie duren met versie 1.2.0 van het script (voer `meet` uit). Met versie 1.1.0 duurde een snapshot 11 seconden, waarvan 6 voor het zoeken van de eerste vrije rij; versie 1.2.0 doet ook dat via de Sheets API. De app wacht 150 seconden op gegevens; intussen blijft ze bruikbaar met de vorige.
 
 De koppen van de testkopie en van de twee bronsheets zijn op 2 oktober 2026 wel uitgelezen; het script zoekt op die koppen.
 
