@@ -1,4 +1,4 @@
-// QC Rondgang - schermen en bediening (fase 1: productiecontroles zonder foto's).
+// QC Rondgang - schermen en bediening: productiecontroles, foto's en dagcontroles.
 import * as db from './db.js';
 import { roep } from './api.js';
 import * as sync from './sync.js';
@@ -19,8 +19,15 @@ let herlaadNaUpdate = false;
 let renderTeller = 0;
 let syncTimer = null;
 const SNAPSHOT_WACHT_MS = 150000; // de bronsheets zijn zwaar; intussen blijft de app bruikbaar
-let bevestigWeg = null;    // app-ID waarvoor "verwijderen" om bevestiging vraagt
+let swReg = null;           // registratie van de service worker
+let laatsteVersieCheck = Date.now();
+let bevestigWeg = null;    // app-ID (of id van een dagcontrole) waarvoor "verwijderen" om bevestiging vraagt
 const nieuw = { tab: 'order', lijn: '', zoek: '', gekozen: null }; // toestand van "Nieuwe controle"
+const objectUrls = [];     // adressen van getoonde foto's, vrij te geven na het tekenen
+const FOTO_LANGSTE_ZIJDE = 1600;
+const FOTO_KWALITEIT = 0.8;
+const FOTO_WACHT_MS = 8000; // zo lang mag de camera over één foto doen
+const isDatum = (t) => /^\d{4}-\d{2}-\d{2}$/.test(String(t || ''));
 
 /* ------------------------------------------------------------------ */
 /* Hulpfuncties                                                        */
@@ -83,6 +90,7 @@ function toonAntwoord(id, antwoorden) {
   if (M.isVervallen(id, antwoorden)) return 'NVT (automatisch)';
   const a = antwoorden[id];
   const v = M.VELDEN[id];
+  if (v.soort === 'meer') return M.operatorLijst(antwoorden).join(', ') || '—';
   if (a === undefined) return '—';
   if (v.soort === 'vakje') return a ? 'Ja' : 'Nee';
   if (a === '') return v.leegKeuze || '—';
@@ -111,9 +119,11 @@ async function werkBalkBij() {
     if (t.aantal) {
       stip = 'stip wacht';
       const delen = [];
-      if (t.controles) delen.push(`${t.controles} ${t.controles === 1 ? 'controle wacht' : 'controles wachten'}`);
-      if (t.fotos) delen.push(`${t.fotos} foto's`);
-      tekst = delen.join(' en ');
+      if (t.controles) delen.push(`${t.controles} ${t.controles === 1 ? 'controle' : 'controles'}`);
+      if (t.dagen) delen.push(`${t.dagen} ${t.dagen === 1 ? 'dagcontrole' : 'dagcontroles'}`);
+      if (t.fotos) delen.push(`${t.fotos} ${t.fotos === 1 ? 'foto' : "foto's"}`);
+      const samen = delen.length > 1 ? `${delen.slice(0, -1).join(', ')} en ${delen[delen.length - 1]}` : delen[0];
+      tekst = `${samen} ${t.aantal === 1 && delen.length === 1 ? 'wacht' : 'wachten'}`;
       if (t.fout) { stip = 'stip fout'; tekst += ` · Fout: ${t.fout}`; }
     }
     if (!navigator.onLine || (t.geenVerbinding && !t.fout)) tekst += ' · geen verbinding';
@@ -138,9 +148,9 @@ async function werkBalkBij() {
 
 function terug() {
   const r = route();
-  if (r[0] === 'c' && r.length >= 4 && Number(r[3]) > 0) return ga(`#/c/${r[1]}/${r[2]}/${Number(r[3]) - 1}`);
   if (r[0] === 'c' && r.length >= 3) return ga(`#/c/${r[1]}`);
   if (r[0] === 'c' || r[0] === 'nieuw') return ga('#/controles');
+  if (r[0] === 'dag' && Number(r[3]) > 0) return ga(`#/dag/${r[1]}/${r[2]}/${Number(r[3]) - 1}`);
   return ga('#/');
 }
 
@@ -158,6 +168,7 @@ function planSync(t) {
 
 async function toon({ behoudScroll = false } = {}) {
   const mijn = ++renderTeller;
+  const vorigeUrls = objectUrls.splice(0); // foto's van het vorige scherm
   const y = window.scrollY;
   const r = route();
   let inhoud;
@@ -168,17 +179,20 @@ async function toon({ behoudScroll = false } = {}) {
     else if (r[0] === 'nieuw') inhoud = await schermNieuw();
     else if (r[0] === 'einde') inhoud = await schermEinde();
     else if (r[0] === 'c') inhoud = await schermControle(r[1], r[2], r[3]);
+    else if (r[0] === 'dag' && M.DAGSOORTEN.includes(r[1])) inhoud = await schermDag(r[1], r[2], Number(r[3]) || 0);
     else inhoud = [h('p', {}, 'Onbekend scherm.')];
   } catch (e) {
     inhoud = [h('div', { class: 'melding fout' }, `Er ging iets mis: ${e.message}`)];
   }
-  if (mijn !== renderTeller) return;
+  if (mijn !== renderTeller) { setTimeout(() => vorigeUrls.forEach((u) => URL.revokeObjectURL(u)), 5000); return; }
   const kop = melding ? h('div', { class: `melding ${melding.soort}`, id: 'melding', role: 'status' }, melding.tekst) : null;
   // Staat de cursor in een invoerveld, dan staat hij er na het tekenen opnieuw.
   const actief = document.activeElement;
   const veld = actief && $scherm.contains(actief) ? actief.getAttribute('data-invoer') || (actief.id === 'zoek' ? '#zoek' : null) : null;
   const getypt = veld ? actief.value : null;
   $scherm.replaceChildren(...[kop, inhoud].flat(Infinity).filter(Boolean));
+  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster'));
+  vorigeUrls.forEach((u) => URL.revokeObjectURL(u));
   if (veld) {
     const terug = veld === '#zoek' ? document.getElementById('zoek') : $scherm.querySelector(`[data-invoer="${veld}"]`);
     if (terug) {
@@ -237,9 +251,19 @@ async function schermInstellingen() {
       h('div', { class: 'knoppen' }, h('button', { class: 'knop hoofd', id: 'inst-opslaan', onclick: opslaan }, 'Opslaan en testen')),
       $uit),
     h('div', { class: 'kaart klein' },
-      h('p', {}, `Versie van de app: ${APP_VERSIE}`),
+      h('p', { id: 'inst-versie' }, `Versie van de app: ${APP_VERSIE}`),
+      h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'zoek-versie', onclick: async (e) => {
+        const knop = e.target;
+        knop.disabled = true;
+        knop.textContent = 'Bezig…';
+        const uit = await zoekNieuweVersie({ nu: true });
+        knop.disabled = false;
+        knop.textContent = uit === 'nieuw' ? 'Nieuwe versie gevonden: tik bovenaan op Bijwerken'
+          : uit === 'geen' ? 'Dit is de nieuwste versie' : 'Controleren mislukt (geen verbinding?)';
+      } }, 'Op nieuwe versie controleren')),
       h('p', { id: 'inst-offline' }, bewaard === null ? 'App op de tablet bewaard: onbekend' : bewaard >= 13 ? `App op de tablet bewaard: ja (${bewaard} bestanden). Ze start ook zonder verbinding.` : `App op de tablet bewaard: NEE (${bewaard} bestanden). Open de app één keer met verbinding voor je de productiezone ingaat.`),
       h('p', {}, vast === null ? 'Vaste opslag: onbekend' : vast ? 'Vaste opslag: ja, de browser ruimt de gegevens niet zelf op.' : 'Vaste opslag: nee. Installeer de app op het startscherm; dan kent Chrome dit meestal toe.'),
+      h('p', { id: 'inst-scherm' }, `Scherm: ${window.innerWidth} × ${window.innerHeight} punten. Boven en Beneden zijn getekend om elk op één scherm te passen vanaf 1280 × 730 (liggend) of 800 × 1200 (staand).`),
       snapshot ? h('p', {}, `Gegevens van ${dagEnUur(snapshot.opgehaaldOm)}: ${snapshot.orders.length} orders, ${snapshot.pallets.length} pallets.`) : null)
   ];
 }
@@ -252,6 +276,8 @@ async function schermStart() {
   const controles = await db.alle('controles');
   const vandaag = controles.filter((c) => c.datum === M.vandaag());
   const onaf = controles.filter((c) => M.DELEN.some((d) => isOpenDeel(c.delen[d])));
+  // Een dagcontrole van een eerdere dag die niet afgesloten of nog niet verzonden is, blijft bereikbaar.
+  const dagEerder = (await db.alle('dagcontroles')).filter((dc) => dc.datum !== M.vandaag() && (dc.status === 'bezig' || dc.status === 'klaar')).sort((a, b) => a.datum.localeCompare(b.datum));
   return [
     h('h2', {}, datumLang(M.vandaag())),
     !snapshot ? h('div', { class: 'melding wacht' }, 'Er zijn nog geen gegevens opgehaald. Tik bovenaan op "Verversen" zodra er verbinding is.') : null,
@@ -260,8 +286,19 @@ async function schermStart() {
       h('button', { class: 'tegel actief', id: 'tegel-controles', onclick: () => ga('#/controles') },
         h('strong', {}, 'Productiecontroles'),
         h('span', { class: 'zacht' }, `${vandaag.length} vandaag${onaf.length ? `, ${onaf.length} onafgewerkt` : ''}`)),
-      h('button', { class: 'tegel', disabled: true }, h('strong', {}, 'Werkmaterialen boven'), h('span', { class: 'zacht' }, 'Nog niet in de app (fase 3). Vul in de sheet in.')),
-      h('button', { class: 'tegel', disabled: true }, h('strong', {}, 'Magazijn en bufferzone'), h('span', { class: 'zacht' }, 'Nog niet in de app (fase 3). Vul in de sheet in.'))),
+      await Promise.all(M.DAGSOORTEN.map(async (soort) => {
+        const kan = !!(snapshot && snapshot.dag && snapshot.dag[soort]);
+        const dc = await db.haal('dagcontroles', M.dagId(soort));
+        const status = dc ? dc.status : 'open';
+        return h('button', { class: `tegel${kan ? ' actief' : ''}`, id: `tegel-${soort}`, disabled: !kan, 'data-status': status, onclick: () => ga(`#/dag/${soort}/${M.vandaag()}`) },
+          h('strong', {}, M.DAGNAAM[soort]),
+          h('span', { class: 'zacht' }, kan ? `Vandaag: ${status === 'open' ? 'nog niet gedaan' : STATUSTEKST[status]}` : 'De controlepunten zijn niet opgehaald. Ververs de gegevens.'));
+      }))),
+    dagEerder.length ? [
+      h('h2', {}, 'Dagcontroles van eerdere dagen'),
+      dagEerder.map((dc) => h('button', { class: 'rij', 'data-dag': dc.id, 'data-status': dc.status, onclick: () => ga(`#/dag/${dc.soort}/${dc.datum}`) },
+        h('span', { class: 'rij-tekst' }, h('strong', {}, M.DAGNAAM[dc.soort]), h('span', {}, `${datumLang(dc.datum)} · ${dc.status === 'klaar' ? 'afgesloten, wacht op verzenden' : 'begonnen, niet afgesloten'}`))))
+    ] : null,
     h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'naar-einde', onclick: () => ga('#/einde') }, 'Rondgang afsluiten'))
   ];
 }
@@ -422,11 +459,11 @@ function wijzigingBanner(c) {
 function blokBoven(c) {
   const b = c.delen.boven;
   if (b.status === 'open') {
-    return h('div', { class: 'melding wacht', id: 'blok-boven' }, h('strong', {}, 'Boven is nog niet gecontroleerd voor deze order.'));
+    return h('div', { class: 'melding wacht groep', id: 'blok-boven' }, h('strong', {}, 'Boven is nog niet gecontroleerd voor deze order.'));
   }
   const gezien = b.gezien || c.opzoek;
   const regel = (naam, waarde) => [h('dt', {}, naam), h('dd', {}, waarde)];
-  return h('div', { class: 'kaart blok-boven', id: 'blok-boven' },
+  return h('div', { class: 'kaart blok-boven groep', id: 'blok-boven' },
     h('h3', {}, b.status === 'bezig' ? 'Boven: begonnen, nog niet afgesloten' : `Boven: afgesloten om ${uur(b.afgeslotenOm)}`),
     h('dl', { class: 'opzoek' },
       regel('Grondstof', gezien.grondstof || '—'),
@@ -448,7 +485,7 @@ async function schermControle(appId, deel, groep) {
   const c = await db.haal('controles', appId);
   if (!c) return [h('div', { class: 'melding fout' }, 'Deze controle bestaat niet (meer) op deze tablet.')];
   if (deel === 'boven' || deel === 'beneden') {
-    return isOpenDeel(c.delen[deel]) ? schermDeel(c, deel, Number(groep) || 0) : schermSamenvatting(c, deel);
+    return isOpenDeel(c.delen[deel]) ? schermDeel(c, deel) : schermSamenvatting(c, deel);
   }
 
   const magWeg = magVerwijderd(c);
@@ -463,6 +500,10 @@ async function schermControle(appId, deel, groep) {
         bevestigWeg = null;
         if (!gewist) { zetMelding('fout', 'Deze controle is intussen verzonden en kan niet meer verwijderd worden.'); return toon(); }
         for (const d of M.DELEN) await sync.uitWachtrij(c.appId, d);
+        for (const soort of M.FOTOSOORTEN) {
+          const ref = c.delen.beneden.fotos && c.delen.beneden.fotos[soort];
+          if (ref && ref.fotoId) { await sync.fotoUitWachtrij(ref.fotoId); await db.wis('fotos', ref.fotoId); }
+        }
         ga('#/controles');
       } }, 'Ja, verwijderen'), h('button', { class: 'knop', onclick: () => { bevestigWeg = null; tekenWeg(); } }, 'Nee, behouden')]
         : h('button', { class: 'knop gevaar', id: 'verwijder', onclick: () => { bevestigWeg = c.appId; tekenWeg(); } }, 'Controle verwijderen')].flat());
@@ -507,6 +548,11 @@ async function bewaar(appId, deel, id, waarde, { teken = true } = {}) {
   if (teken) await toon({ behoudScroll: true });
 }
 
+/**
+ * Eén controlepunt als een regel: links de naam, rechts het antwoord. Zo past
+ * een heel deel op één scherm van de tablet. De uitleg uit de kop van de sheet
+ * staat klein onder de naam; een tik op de naam toont ze volledig.
+ */
 function punt(c, deel, id, open) {
   const v = M.VELDEN[id];
   const antwoorden = c.delen[deel].antwoorden;
@@ -515,56 +561,145 @@ function punt(c, deel, id, open) {
   const knip = volledig.indexOf(':');
   const titel = knip > 0 && knip < 40 ? volledig.slice(0, knip) : volledig;
   const hulp = knip > 0 && knip < 40 ? volledig.slice(knip + 1).trim() : '';
-  const el = h('section', { class: `punt${open ? ' open' : ''}`, 'data-veld': id }, h('h3', {}, titel), hulp ? h('p', { class: 'hulp' }, hulp) : null);
+  const $naam = h('div', { class: 'punt-naam', onclick: () => $naam.classList.toggle('uit') }, h('h3', {}, titel), hulp ? h('p', { class: 'hulp' }, hulp) : null);
+  const el = h('section', { class: `punt regel${open ? ' open' : ''}`, 'data-veld': id }, $naam);
 
   if (M.isVervallen(id, antwoorden)) {
     el.classList.add('vervallen');
-    el.append(h('div', { class: 'nvt-auto' }, 'NVT (automatisch)'),
-      h('p', { class: 'hulp' }, `Wordt niet gevraagd omdat "${M.label(v.nvtAls, snapshot)}" op NEE staat.`));
+    el.append(h('div', { class: 'nvt-auto', title: `Wordt niet gevraagd omdat "${M.label(v.nvtAls, snapshot)}" op NEE staat.` }, 'NVT (automatisch)'));
+    return el;
+  }
+  if (v.soort === 'meer') {
+    const namen = M.operatorLijst(antwoorden);
+    if (namen.length) $naam.append(h('p', { class: 'namen', id: 'operatoren-tekst' }, namen.join(', ')));
+    el.append(h('div', { class: 'keuzes' }, h('button', { class: `keuze${namen.length ? ' gekozen' : ''}`, id: 'operatoren-kies', onclick: () => kiesOperatoren(c) }, namen.length ? 'Wijzig' : 'Kies…')));
     return el;
   }
   if (v.soort === 'tekst') {
-    el.append(h('textarea', { class: 'invoer', 'data-invoer': id, rows: 3, placeholder: 'Verplicht bij een NOK of STOP', oninput: (e) => bewaar(c.appId, deel, id, e.target.value, { teken: false }) }, a || ''));
+    el.classList.add('tekst');
+    el.append(h('textarea', { class: 'invoer', 'data-invoer': id, rows: 2, placeholder: 'Verplicht bij een NOK of STOP', oninput: (e) => bewaar(c.appId, deel, id, e.target.value, { teken: false }) }, a || ''));
     return el;
   }
   if (v.soort === 'getal') {
-    el.append(h('input', { class: 'invoer', 'data-invoer': id, type: 'number', inputmode: 'decimal', step: 'any', min: '0', value: a === undefined ? '' : a,
+    el.append(h('input', { class: 'invoer getal', 'data-invoer': id, type: 'number', inputmode: 'decimal', step: 'any', min: '0', value: a === undefined ? '' : a,
       oninput: (e) => bewaar(c.appId, deel, id, e.target.value === '' ? undefined : e.target.value, { teken: false }) }));
     return el;
   }
   const ks = M.keuzes(id, snapshot);
   if (!ks) {
+    el.classList.add('tekst');
     el.append(h('div', { class: 'melding fout' }, 'Voor deze kolom is in de sheet geen keuzelijst gevonden. Ververs de gegevens of kijk de gegevensvalidatie van de kolom na.'));
     return el;
   }
-  el.append(h('div', { class: `keuzes${ks.length > 5 ? ' veel' : ''}` }, ks.map((k) =>
+  if (ks.length > 4) {
+    // Een lange keuzelijst (operatoren, trechters): dezelfde keuzes, in een uitklaplijst. Niets is vooraf gekozen.
+    const gekozen = a === undefined ? -1 : ks.findIndex((k) => k.waarde === a);
+    el.append(h('select', { class: `invoer kies${gekozen === -1 ? '' : ' gekozen'}`, 'data-keuze': id, onchange: (e) => bewaar(c.appId, deel, id, ks[Number(e.target.value)].waarde) },
+      h('option', { value: '', disabled: true, selected: gekozen === -1 }, 'Kies…'),
+      ks.map((k, i) => h('option', { value: String(i), selected: i === gekozen }, k.tekst))));
+    return el;
+  }
+  el.append(h('div', { class: 'keuzes' }, ks.map((k) =>
     h('button', { class: `keuze ${kleurKlasse(k)}${a !== undefined && a === k.waarde ? ' gekozen' : ''}`, 'data-waarde': String(k.waarde), 'aria-pressed': a !== undefined && a === k.waarde ? 'true' : 'false',
       onclick: () => bewaar(c.appId, deel, id, k.waarde) }, k.tekst))));
   return el;
 }
 
-async function schermDeel(c, deel, gi) {
-  const groepen = M.GROEPEN[deel];
-  gi = Math.min(Math.max(gi, 0), groepen.length - 1);
-  const g = groepen[gi];
-  const d = c.delen[deel];
-  const open = toonOpen ? M.openPunten(deel, d.antwoorden, gi) : [];
-  const laatste = gi === groepen.length - 1;
+/**
+ * Keuzescherm voor de operatoren: iedereen die aan de lijn staat aantikken (één,
+ * twee, soms drie). De knoppen zijn de keuzelijst "Operator" van de sheet. Een
+ * naam die er niet in staat (interim, nieuwe collega) kan toegevoegd worden; de
+ * namen die zo de laatste dagen gebruikt zijn, staan er opnieuw bij. Elke tik
+ * wordt meteen bewaard.
+ */
+async function kiesOperatoren(c) {
+  const lijst = M.operatorKeuzes(snapshot);
+  const eerder = [];
+  for (const x of await db.alle('controles')) {
+    for (const n of M.operatorLijst(x.delen.beneden.antwoorden)) if (!lijst.includes(n) && !eerder.includes(n)) eerder.push(n);
+  }
+  const vers = await db.haal('controles', c.appId);
+  if (!vers) return;
+  let gekozen = M.operatorLijst(vers.delen.beneden.antwoorden).slice();
+  const $lijst = h('div', { class: 'kiezer-lijst', id: 'operatoren-lijst' });
+  const $gekozen = h('p', { class: 'kiezer-gekozen', id: 'operatoren-gekozen' });
+  const $naam = h('input', { class: 'invoer', id: 'operator-nieuw', type: 'text', maxlength: '40', autocomplete: 'off', autocapitalize: 'words', placeholder: 'Naam die niet in de lijst staat' });
+  const alleNamen = () => [...lijst, ...eerder, ...gekozen.filter((n) => !lijst.includes(n) && !eerder.includes(n))];
+  const bewaarKeuze = () => bewaar(c.appId, 'beneden', 'operatoren', gekozen.length ? gekozen.slice() : undefined, { teken: false });
+  function teken() {
+    $lijst.replaceChildren(...alleNamen().map((n) => h('button', { class: `keuze${gekozen.includes(n) ? ' gekozen' : ''}${lijst.includes(n) ? '' : ' eigen'}`, 'data-naam': n, 'aria-pressed': String(gekozen.includes(n)),
+      onclick: async () => {
+        gekozen = gekozen.includes(n) ? gekozen.filter((x) => x !== n) : [...gekozen, n];
+        await bewaarKeuze();
+        teken();
+      } }, n, lijst.includes(n) ? null : h('small', {}, 'niet in de lijst'))));
+    $gekozen.textContent = gekozen.length ? `Gekozen: ${gekozen.join(', ')}` : 'Nog niemand gekozen. Tik iedereen aan die aan de lijn staat.';
+  }
+  async function voegToe() {
+    // Een komma scheidt de namen in de sheet: in een naam zelf mag ze niet staan.
+    const getypt = $naam.value.replace(/[,;]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!getypt) return;
+    const naam = alleNamen().find((n) => n.toLowerCase() === getypt.toLowerCase()) || getypt;
+    if (!gekozen.includes(naam)) gekozen = [...gekozen, naam];
+    $naam.value = '';
+    await bewaarKeuze();
+    teken();
+  }
+  $naam.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); voegToe(); } });
+  const $laag = h('div', { class: 'kiezer', id: 'operatoren-kiezer' },
+    h('h2', {}, `Operatoren · ${c.lijn ? c.lijn + ' · ' : ''}${c.code}`),
+    $gekozen, $lijst,
+    h('div', { class: 'kiezer-nieuw' }, $naam, h('button', { class: 'knop', id: 'operator-toevoegen', onclick: voegToe }, 'Toevoegen')),
+    h('div', { class: 'knoppen' }, h('button', { class: 'knop hoofd', id: 'operatoren-klaar', onclick: async () => {
+      await voegToe(); // een naam die nog in het veld staat, telt mee
+      $laag.remove();
+      toon({ behoudScroll: true });
+    } }, 'Klaar')));
+  teken();
+  document.body.append($laag);
+}
 
-  async function verder() {
+/**
+ * De lijn van deze productie. Ze komt uit de productielijst, maar kan op het
+ * laatste moment gewijzigd zijn: de controleur kiest dan de juiste. Een gekozen
+ * lijn blijft staan bij het verversen en komt in kolom "Lijn" van de sheet.
+ */
+function lijnKeuze(c) {
+  const keuzes = M.lijnKeuzes(snapshot, c.lijn);
+  const treffer = M.zoekCode(snapshot, c.code);
+  const gepland = treffer && treffer.item.lijn ? String(treffer.item.lijn) : '';
+  return h('label', { class: 'lijn-keuze' },
+    h('span', {}, c.lijn && gepland && gepland !== c.lijn ? `Lijn (planning: ${gepland})` : 'Lijn'),
+    h('select', { class: `invoer kies${c.lijn ? ' gekozen' : ''}`, id: 'lijn', onchange: async (e) => {
+      const lijn = e.target.value;
+      try {
+        await db.werkBij('controles', c.appId, (x) => { x.lijn = lijn; x.lijnZelf = true; });
+      } catch (err) {
+        zetMelding('fout', `Bewaren op de tablet mislukte: ${err && err.message ? err.message : err}. De lijn is NIET gewijzigd.`);
+      }
+      toon({ behoudScroll: true });
+    } },
+      !c.lijn ? h('option', { value: '', disabled: true, selected: true }, 'Kies…') : null,
+      keuzes.map((k) => h('option', { value: k, selected: k === c.lijn }, k))));
+}
+
+/** Een heel deel (Boven of Beneden) op één scherm: alle punten in kolommen naast elkaar. */
+async function schermDeel(c, deel) {
+  const groepen = M.GROEPEN[deel];
+  const d = c.delen[deel];
+  const open = toonOpen ? M.openPunten(deel, d) : [];
+  const fotos = deel === 'beneden' ? await fotosVan(d) : {};
+
+  async function afsluiten() {
     const vers = await db.haal('controles', c.appId);
-    const antw = vers.delen[deel].antwoorden;
-    if (M.openPunten(deel, antw, gi).length) {
+    const antw = vers.delen[deel];
+    if (M.openPunten(deel, antw).length) {
       toonOpen = true;
       await toon({ behoudScroll: true });
       const eerste = document.querySelector('.punt.open');
-      if (eerste) eerste.scrollIntoView({ block: 'center' });
+      if (eerste) eerste.scrollIntoView({ block: 'nearest' });
       return;
     }
-    if (!laatste) return ga(`#/c/${c.appId}/${deel}/${gi + 1}`);
-    // Afsluiten: ook de vorige groepen nakijken.
-    const elders = groepen.findIndex((_, i) => M.openPunten(deel, antw, i).length);
-    if (elders !== -1) return ga(`#/c/${c.appId}/${deel}/${elders}`, { markeerOpen: true });
     await db.werkBij('controles', c.appId, (x) => {
       const dx = x.delen[deel];
       dx.status = 'klaar';
@@ -574,29 +709,52 @@ async function schermDeel(c, deel, gi) {
       dx.gezien = x.bron === 'vrij' ? null : Object.fromEntries(M.GEZIEN[deel].map((k) => [k, x.opzoek[k] || '']));
     });
     await sync.inWachtrij(c.appId, deel);
+    if (deel === 'beneden') {
+      // Eerst de gegevens van de controle (klein), daarna de foto's (groot).
+      const f = await fotosVan(vers.delen.beneden);
+      for (const soort of M.FOTOSOORTEN) if (f[soort] && f[soort].status !== 'verzonden') await sync.fotoInWachtrij(f[soort].id, c.appId);
+    }
     sync.verwerk();
     zetMelding('ok', `${M.DEELNAAM[deel]} is afgesloten voor ${c.code}.`, 1);
     ga(`#/c/${c.appId}`);
   }
 
+  const fotoOpen = M.FOTOSOORTEN.some((soort) => open.includes(M.FOTOS[soort].punt));
+  const puntenOpen = open.filter((id) => M.VELDEN[id]);
+  const openTekst = [
+    puntenOpen.length ? `Nog ${puntenOpen.length} ${puntenOpen.length === 1 ? 'punt' : 'punten'} open (rood omrand)${open.includes(M.OPMERKING[deel]) ? '; een NOK of STOP vraagt een opmerking' : ''}.` : '',
+    fotoOpen ? 'Beide foto\'s zijn nodig; die van het etiket mag op NVT staan.' : ''
+  ].filter(Boolean).join(' ');
+
   return [
-    kopControle(c),
-    deel === 'beneden' ? blokBoven(c) : null,
     wijzigingBanner(c),
-    h('h2', {}, `${M.DEELNAAM[deel]}: ${g.titel}`),
-    h('p', { class: 'stap' }, `Stap ${gi + 1} van ${groepen.length}`),
-    g.toon.length && c.bron !== 'vrij' ? h('div', { class: 'kaart' }, opzoekLijst(c.opzoek, g.toon)) : null,
-    open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Nog ${open.length} ${open.length === 1 ? 'punt' : 'punten'} open. Elk punt vraagt een antwoord${open.includes(M.OPMERKING[deel]) ? '; een NOK of STOP vraagt een opmerking' : ''}.`) : null,
-    g.velden.map((id) => punt(c, deel, id, open.includes(id))),
-    h('div', { class: 'onderbalk' },
-      gi > 0 ? h('button', { class: 'knop', id: 'vorige', onclick: () => ga(`#/c/${c.appId}/${deel}/${gi - 1}`) }, 'Vorige') : null,
-      h('button', { class: 'knop hoofd', id: 'verder', onclick: verder }, laatste ? `${M.DEELNAAM[deel]} afsluiten` : 'Volgende'))
+    h('div', { class: 'deel-raster', id: 'deel', 'data-deel': deel },
+      h('div', { class: 'groep info', id: 'kop-controle' },
+        h('div', { class: 'kop-rij' }, h('h2', {}, `${M.DEELNAAM[deel]} · ${c.code}`), lijnKeuze(c)),
+        c.bron !== 'vrij' ? opzoekLijst(c.opzoek, M.GEZIEN[deel])
+          : h('p', { class: 'klein zacht' }, 'Deze code staat niet in de opgehaalde gegevens. De sheet vult product en lot zelf aan.'),
+        c.datum !== M.vandaag() ? h('p', { class: 'klein zacht' }, `Controle van ${datumLang(c.datum)}`) : null),
+      deel === 'beneden' ? blokBoven(c) : null,
+      groepen.map((g) => {
+        if (!g.velden.length) return null;
+        const inhoud = [h('h3', { class: 'groep-titel' }, g.titel), g.velden.map((id) => punt(c, deel, id, open.includes(id)))];
+        // samen: in één blok, zodat de kolommen deze punten nooit uit elkaar halen.
+        return g.samen ? h('div', { class: 'samen' }, inhoud) : inhoud;
+      }),
+      deel === 'beneden' ? [
+        h('h3', { class: 'groep-titel' }, "Foto's"),
+        M.FOTOSOORTEN.map((soort) => fotoPunt(c, soort, fotos[soort], open.includes(M.FOTOS[soort].punt), true))
+      ] : null,
+      h('div', { class: 'slot' },
+        open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, openTekst) : null,
+        h('button', { class: 'knop hoofd breed', id: 'verder', onclick: afsluiten }, `${M.DEELNAAM[deel]} afsluiten`)))
   ];
 }
 
 async function schermSamenvatting(c, deel) {
   const d = c.delen[deel];
   const magCorrigeren = c.datum === M.vandaag();
+  const fotos = deel === 'beneden' ? await fotosVan(d) : {};
   return [
     kopControle(c),
     deel === 'beneden' ? blokBoven(c) : null,
@@ -604,12 +762,373 @@ async function schermSamenvatting(c, deel) {
     h('p', { class: 'stap' }, `Afgesloten om ${dagEnUur(d.afgeslotenOm)}`),
     h('div', { class: 'kaart' }, h('table', { class: 'samenvatting' }, h('tbody', {}, M.veldenVan(deel).map((id) =>
       h('tr', { 'data-veld': id }, h('td', {}, M.label(id, snapshot).split(':')[0]), h('td', {}, toonAntwoord(id, d.antwoorden))))))),
+    deel === 'beneden' ? M.FOTOSOORTEN.map((soort) => fotoPunt(c, soort, fotos[soort], false, false)) : null,
     h('div', { class: 'knoppen' },
       h('button', { class: 'knop hoofd', onclick: () => ga(`#/c/${c.appId}`) }, 'Terug naar de controle'),
       magCorrigeren ? h('button', { class: 'knop', id: 'corrigeren', onclick: async () => {
         await db.werkBij('controles', c.appId, (x) => { x.delen[deel].status = 'bezig'; x.delen[deel].versie += 1; });
         await sync.uitWachtrij(c.appId, deel);
         ga(`#/c/${c.appId}/${deel}/0`);
+      } }, 'Corrigeren') : null),
+    !magCorrigeren ? h('p', { class: 'klein zacht' }, 'Corrigeren in de app kan alleen op de dag van de controle. Latere correcties gebeuren in de sheet.') : null
+  ];
+}
+
+/* ------------------------------------------------------------------ */
+/* Foto's                                                              */
+/* ------------------------------------------------------------------ */
+
+/** De bewaarde foto's van een deel: { zk: fotorecord, etiket: fotorecord }. */
+async function fotosVan(d) {
+  const uit = {};
+  for (const soort of M.FOTOSOORTEN) {
+    const ref = d.fotos && d.fotos[soort];
+    if (ref && ref.fotoId) uit[soort] = await db.haal('fotos', ref.fotoId);
+  }
+  return uit;
+}
+
+/** Verkleint tot een langste zijde van 1600 pixels en bewaart als JPEG. */
+function naarJpeg(bron, breedte, hoogte) {
+  if (!breedte || !hoogte) throw new Error('geen beeld van de camera');
+  const schaal = Math.min(1, FOTO_LANGSTE_ZIJDE / Math.max(breedte, hoogte));
+  const doek = document.createElement('canvas');
+  doek.width = Math.max(1, Math.round(breedte * schaal));
+  doek.height = Math.max(1, Math.round(hoogte * schaal));
+  doek.getContext('2d').drawImage(bron, 0, 0, doek.width, doek.height);
+  return new Promise((resolve, reject) => doek.toBlob((b) => (b ? resolve(b) : reject(new Error('De foto kon niet bewaard worden.'))), 'image/jpeg', FOTO_KWALITEIT));
+}
+
+/**
+ * Camera in de pagina zelf. De camera-app van Android kan het tabblad uit het
+ * geheugen gooien; dat gebeurt hier niet. "Camera-app of bestand" blijft als
+ * reserve. Geeft een JPEG terug, of null bij annuleren.
+ */
+function neemFoto(titel) {
+  return new Promise((resolve) => {
+    let stroom = null;
+    let klaar = false;
+    const $video = h('video', { autoplay: true, playsinline: true, muted: true });
+    const $fout = h('p', { class: 'camera-fout', id: 'camera-fout' });
+    const $bestand = h('input', { type: 'file', accept: 'image/*', capture: 'environment', id: 'camera-bestand', hidden: true });
+    const stopStroom = () => {
+      if (stroom) stroom.getTracks().forEach((t) => t.stop());
+      stroom = null;
+      $video.srcObject = null;
+    };
+    const sluit = (blob) => {
+      if (klaar) return;
+      klaar = true;
+      stopStroom();
+      $laag.remove();
+      resolve(blob);
+    };
+    // Een beeld van de camera of uit een bestand: verkleinen en het geheugen meteen vrijgeven.
+    const vanBeeld = async (beeld) => {
+      try { return await naarJpeg(beeld, beeld.width, beeld.height); } finally { if (beeld.close) beeld.close(); }
+    };
+    const $knip = h('button', { class: 'knop hoofd', id: 'camera-knip', disabled: true, onclick: async () => {
+      if (!stroom) return;
+      $knip.disabled = true;
+      $bestandKnop.disabled = true; // de camera niet loslaten terwijl ze een foto neemt
+      try {
+        // Eerst een echte foto (scherper dan een videobeeld), anders het videobeeld.
+        // Antwoordt de camera niet binnen enkele seconden, dan ook het videobeeld.
+        let bron = null;
+        try {
+          if ('ImageCapture' in window) {
+            const foto = await Promise.race([
+              new ImageCapture(stroom.getVideoTracks()[0]).takePhoto(),
+              new Promise((_, weiger) => setTimeout(() => weiger(new Error('camera antwoordt niet')), FOTO_WACHT_MS))
+            ]);
+            bron = await createImageBitmap(foto);
+          }
+        } catch (e) { bron = null; }
+        const blob = bron ? await vanBeeld(bron) : await naarJpeg($video, $video.videoWidth, $video.videoHeight);
+        sluit(blob);
+      } catch (e) {
+        $fout.textContent = `De foto is niet gelukt (${e.message}). Probeer opnieuw.`;
+        $knip.disabled = !stroom;
+      } finally {
+        $bestandKnop.disabled = false;
+      }
+    } }, 'Foto nemen');
+    // De camera-app heeft de camera zelf nodig: eerst de camera in de pagina loslaten.
+    const $bestandKnop = h('button', { class: 'knop', id: 'camera-bestand-knop', onclick: () => { stopStroom(); $knip.disabled = true; $bestand.click(); } }, 'Camera-app of bestand');
+    $bestand.addEventListener('change', async () => {
+      const f = $bestand.files && $bestand.files[0];
+      if (!f) return;
+      try {
+        sluit(await vanBeeld(await createImageBitmap(f)));
+      } catch (e) {
+        $fout.textContent = 'Dit bestand kon niet als foto gelezen worden.';
+      }
+    });
+    const $laag = h('div', { class: 'camera', id: 'camera' },
+      h('div', { class: 'camera-kop' }, titel),
+      $video, $fout,
+      h('div', { class: 'camera-knoppen' },
+        $knip,
+        $bestandKnop,
+        h('button', { class: 'knop', id: 'camera-annuleer', onclick: () => sluit(null) }, 'Annuleren')),
+      $bestand);
+    document.body.append($laag);
+
+    const startCamera = () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        $fout.textContent = 'Deze browser geeft de app geen camera. Gebruik "Camera-app of bestand".';
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } } })
+        .then((s) => {
+          if (klaar || stroom) { s.getTracks().forEach((t) => t.stop()); return; }
+          stroom = s;
+          $video.srcObject = s;
+          $video.onloadedmetadata = () => { $knip.disabled = false; };
+        })
+        .catch((e) => { $fout.textContent = `De camera kan niet geopend worden (${e.name || e}). Gebruik "Camera-app of bestand".`; });
+    };
+    // Geen bestand gekozen: de camera in de pagina komt terug.
+    $bestand.addEventListener('cancel', () => { if (!klaar) startCamera(); });
+    startCamera();
+  });
+}
+
+/** Bewaart een nieuwe foto: eerst de foto zelf, dan de verwijzing in de controle. */
+async function bewaarFoto(appId, soort, blob) {
+  const id = M.nieuwId();
+  // De lijn van nu hoort bij de bestandsnaam en verandert daarna niet meer:
+  // een herhaling van de upload vindt zo altijd hetzelfde bestand terug.
+  const controle = await db.haal('controles', appId);
+  await db.zet('fotos', { id, appId, soort, blob, lijn: controle ? controle.lijn || '' : '', genomenOm: Date.now(), status: 'klaar', verzondenOm: null });
+  let oud = null;
+  let gezet = false;
+  await db.werkBij('controles', appId, (c) => {
+    const d = c.delen.beneden;
+    if (!isOpenDeel(d)) return false;
+    d.fotos = d.fotos || {};
+    oud = d.fotos[soort] && d.fotos[soort].fotoId;
+    d.fotos[soort] = { fotoId: id };
+    d.status = 'bezig';
+    gezet = true;
+  });
+  if (!gezet) { await db.wis('fotos', id); return; }
+  if (oud) { await sync.fotoUitWachtrij(oud); await db.wis('fotos', oud); }
+}
+
+async function fotoNemen(c, soort) {
+  try {
+    const blob = await neemFoto(M.FOTOS[soort].label);
+    if (!blob) return;
+    await bewaarFoto(c.appId, soort, blob);
+  } catch (e) {
+    zetMelding('fout', `De foto is NIET bewaard: ${e && e.message ? e.message : e}`);
+  }
+  await toon({ behoudScroll: true });
+}
+
+/** nvt = true: uitdrukkelijk "niet van toepassing". nvt = false: de (optionele) foto gewoon wissen. */
+async function fotoNietVanToepassing(c, soort, nvt = true) {
+  let oud = null;
+  await db.werkBij('controles', c.appId, (x) => {
+    const d = x.delen.beneden;
+    if (!isOpenDeel(d)) return false;
+    d.fotos = d.fotos || {};
+    oud = d.fotos[soort] && d.fotos[soort].fotoId;
+    if (nvt) d.fotos[soort] = { nvt: true }; else delete d.fotos[soort];
+    d.status = 'bezig';
+  });
+  if (oud) { await sync.fotoUitWachtrij(oud); await db.wis('fotos', oud); }
+  await toon({ behoudScroll: true });
+}
+
+/** Toont een bewaarde foto groot, over het hele scherm. Een tik sluit ze weer. */
+function toonFotoGroot(blob, titel) {
+  const u = URL.createObjectURL(blob);
+  const $laag = h('div', { class: 'camera foto-groot', id: 'foto-groot', onclick: () => { $laag.remove(); URL.revokeObjectURL(u); } },
+    h('div', { class: 'camera-kop' }, `${titel} · tik om te sluiten`),
+    h('img', { src: u, alt: titel }));
+  document.body.append($laag);
+}
+
+function fotoPunt(c, soort, foto, open, bewerkbaar) {
+  const def = M.FOTOS[soort];
+  const ref = (c.delen.beneden.fotos || {})[soort] || {};
+  const $naam = h('div', { class: 'punt-naam' }, h('h3', {}, def.label), def.hulp && bewerkbaar && !ref.fotoId ? h('p', { class: 'hulp' }, def.hulp) : null);
+  const el = h('section', { class: `punt regel${open ? ' open' : ''}`, 'data-veld': def.punt, 'data-foto': ref.fotoId ? 'ja' : ref.nvt ? 'nvt' : 'nee' }, $naam);
+  const $rechts = h('div', { class: 'keuzes' });
+  if (foto && foto.blob) {
+    const u = URL.createObjectURL(foto.blob);
+    objectUrls.push(u);
+    $naam.append(h('p', { class: 'hulp' }, `${dagEnUur(foto.genomenOm)} · ${Math.round(foto.blob.size / 1024)} kB · ${foto.status === 'verzonden' ? 'verzonden' : 'nog niet verzonden'}`));
+    $rechts.append(h('img', { class: 'foto-klein', src: u, alt: def.label, title: 'Tik om de foto groot te bekijken', onclick: () => toonFotoGroot(foto.blob, def.label) }));
+  } else if (ref.fotoId) {
+    $naam.append(h('p', { class: 'hulp' }, 'Foto genomen en verzonden.'));
+  } else if (ref.nvt && !bewerkbaar) {
+    $rechts.append(h('div', { class: 'nvt-auto' }, 'Niet van toepassing'));
+  } else if (!ref.nvt && !bewerkbaar) {
+    $naam.append(h('p', { class: 'hulp' }, 'Geen foto.'));
+  }
+  if (bewerkbaar) {
+    $rechts.append(h('button', { class: 'keuze', id: `foto-${soort}`, onclick: () => fotoNemen(c, soort) }, ref.fotoId ? 'Opnieuw' : 'Foto nemen'));
+    if (def.optioneel && ref.fotoId) $rechts.append(h('button', { class: 'keuze', id: `foto-${soort}-wis`, onclick: () => fotoNietVanToepassing(c, soort, false) }, 'Wissen'));
+    if (def.magNvt) $rechts.append(h('button', { class: `keuze k-nvt${ref.nvt ? ' gekozen' : ''}`, id: `foto-${soort}-nvt`, title: 'Niet van toepassing', onclick: () => fotoNietVanToepassing(c, soort) }, 'NVT'));
+  }
+  el.append($rechts);
+  return el;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dagcontroles: Werkmaterialen boven en Magazijn en bufferzone        */
+/* ------------------------------------------------------------------ */
+
+/** datum: de dag van de dagcontrole op het scherm, niet "vandaag" op het moment van bewaren. */
+async function bewaarDag(soort, datum, fn, { teken = true } = {}) {
+  bevestigWeg = null; // een antwoord geven is geen bevestiging van "verwijderen"
+  try {
+    // Stond het scherm al open voor middernacht maar was er nog niets ingevuld,
+    // dan is dit de controle van vandaag.
+    if (datum !== M.vandaag() && !(await db.haal('dagcontroles', M.dagId(soort, datum)))) {
+      datum = M.vandaag();
+      const r = route();
+      if (r[0] === 'dag') { history.replaceState(null, '', `#/dag/${soort}/${datum}/${Number(r[3]) || 0}`); teken = true; }
+    }
+    await db.werkBijOfMaak('dagcontroles', M.dagId(soort, datum), () => M.nieuweDag(soort, datum), (dc) => {
+      if (!isOpenDeel(dc)) return false;
+      fn(dc);
+      dc.status = 'bezig';
+    });
+  } catch (e) {
+    zetMelding('fout', `Bewaren op de tablet mislukte: ${e && e.message ? e.message : e}. Dit antwoord is NIET bewaard.`);
+    teken = true;
+  }
+  if (teken) await toon({ behoudScroll: true });
+}
+
+function dagTitel(soort, p) {
+  if (soort !== 'magazijn') return [p.kop, p.hulp || ''];
+  const knip = p.kop.indexOf(':');
+  return knip > 0 ? [p.kop.slice(0, knip), p.kop.slice(knip + 1).trim()] : [p.kop, ''];
+}
+
+function dagPunt(soort, dc, p, sleutel, open) {
+  const a = dc.antwoorden[p.kop];
+  const [okTekst, andersTekst] = M.DAGKEUZE[soort];
+  const [titel, hulp] = dagTitel(soort, p);
+  const el = h('section', { class: `punt${open ? ' open' : ''}`, 'data-punt': p.kop }, h('h3', {}, titel), hulp ? h('p', { class: 'hulp' }, hulp) : null);
+  el.append(h('div', { class: 'keuzes' },
+    h('button', { class: `keuze k-ok${a && a.ok === true ? ' gekozen' : ''}`, 'data-waarde': 'ok', onclick: () => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: true }; }) }, okTekst),
+    h('button', { class: `keuze ${soort === 'magazijn' ? 'k-nok' : 'k-opm'}${a && a.ok === false ? ' gekozen' : ''}`, 'data-waarde': 'anders',
+      onclick: () => bewaarDag(soort, dc.datum, (x) => { const oud = x.antwoorden[p.kop]; x.antwoorden[p.kop] = { ok: false, tekst: oud && oud.ok === false ? oud.tekst : '' }; }) }, andersTekst)));
+  if (a && a.ok === false) {
+    el.append(h('textarea', { class: 'invoer', 'data-invoer': sleutel, rows: 2, placeholder: soort === 'magazijn' ? 'Opmerking NOK (verplicht)' : 'Wat is er vastgesteld? (verplicht)',
+      oninput: (e) => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: false, tekst: e.target.value }; }, { teken: false }) }, a.tekst || ''));
+  }
+  return el;
+}
+
+/** Een dagcontrole van een eerdere dag die niet afgesloten is, mag van de tablet weg. Vraagt een tweede tik. */
+function dagWeg(dc) {
+  const zeker = bevestigWeg === dc.id;
+  async function verwijder() {
+    if (!zeker) { bevestigWeg = dc.id; return toon({ behoudScroll: true }); }
+    bevestigWeg = null;
+    const weg = await db.wisAls('dagcontroles', dc.id, (x) => isOpenDeel(x));
+    if (weg) zetMelding('ok', `${M.DAGNAAM[dc.soort]} van ${datumLang(dc.datum)} is van de tablet verwijderd.`, 1);
+    ga('#/');
+  }
+  return [
+    h('div', { class: 'knoppen' },
+      h('button', { class: `knop${zeker ? ' gevaar hoofd' : ''}`, id: 'dag-weg', onclick: verwijder }, zeker ? 'Ja, verwijderen' : 'Niet meer afwerken: verwijderen'),
+      zeker ? h('button', { class: 'knop', id: 'dag-weg-nee', onclick: () => { bevestigWeg = null; toon({ behoudScroll: true }); } }, 'Nee, behouden') : null),
+    zeker ? h('p', { class: 'klein' }, 'De antwoorden op deze tablet gaan weg. Wat al in de sheet staat, blijft daar staan.') : null
+  ];
+}
+
+async function schermDag(soort, datum, gi) {
+  const groepen = M.dagGroepen(soort, snapshot);
+  if (!groepen) {
+    // Zonder controlepunten kan de dagcontrole niet getoond worden. Een begonnen
+    // dagcontrole van een eerdere dag kan wel nog weg, zodat ze niet blijft hangen.
+    const vast = isDatum(datum) && datum !== M.vandaag() ? await db.haal('dagcontroles', M.dagId(soort, datum)) : null;
+    return [h('h2', {}, M.DAGNAAM[soort]), h('div', { class: 'melding wacht' }, 'De controlepunten van dit tabblad zijn niet opgehaald. Ververs de gegevens.'), waarschuwingen(),
+      vast && isOpenDeel(vast) ? h('div', { class: 'melding wacht', id: 'dag-eerder' }, `Op deze tablet staat een begonnen dagcontrole van ${datumLang(vast.datum)}.`, dagWeg(vast)) : null];
+  }
+  // De dag staat in het adres van het scherm: een controle die voor middernacht
+  // begon, blijft die van gisteren. Een andere dag dan vandaag kan alleen als
+  // er voor die dag al iets ingevuld is.
+  let dc = isDatum(datum) ? await db.haal('dagcontroles', M.dagId(soort, datum)) : null;
+  if (!dc) dc = (await db.haal('dagcontroles', M.dagId(soort))) || M.nieuweDag(soort);
+  datum = dc.datum;
+  if (!isOpenDeel(dc)) return dagSamenvatting(dc, groepen);
+  const eerder = datum !== M.vandaag();
+
+  gi = Math.min(Math.max(gi, 0), groepen.length - 1);
+  const g = groepen[gi];
+  const open = toonOpen ? M.dagOpen(dc, groepen, gi) : [];
+  const laatste = gi === groepen.length - 1;
+
+  async function verder() {
+    const vers = (await db.haal('dagcontroles', M.dagId(soort, datum))) || M.nieuweDag(soort, datum);
+    if (M.dagOpen(vers, groepen, gi).length) {
+      toonOpen = true;
+      await toon({ behoudScroll: true });
+      const eerste = document.querySelector('.punt.open');
+      if (eerste) eerste.scrollIntoView({ block: 'center' });
+      return;
+    }
+    if (!laatste) return ga(`#/dag/${soort}/${datum}/${gi + 1}`);
+    const elders = groepen.findIndex((_, i) => M.dagOpen(vers, groepen, i).length);
+    if (elders !== -1) return ga(`#/dag/${soort}/${datum}/${elders}`, { markeerOpen: true });
+    await db.werkBij('dagcontroles', vers.id, (x) => {
+      x.status = 'klaar';
+      x.versie += 1;
+      x.afgeslotenOm = new Date().toISOString();
+    });
+    await sync.dagInWachtrij(vers.id);
+    sync.verwerk();
+    zetMelding('ok', `${M.DAGNAAM[soort]}${eerder ? ` van ${datumLang(datum)}` : ''} is afgesloten.`, 1);
+    ga('#/');
+  }
+
+
+  return [
+    h('h2', {}, `${M.DAGNAAM[soort]}: ${g.titel}`),
+    h('p', { class: 'stap' }, `Stap ${gi + 1} van ${groepen.length} · ${datumLang(dc.datum)}`),
+    eerder ? h('div', { class: 'melding wacht', id: 'dag-eerder' },
+      `Dit is de dagcontrole van ${datumLang(datum)}, niet van vandaag. Afsluiten schrijft ze in de sheet bij die datum; staat daar voor die dag al iets, dan wordt het overschreven.`,
+      dagWeg(dc)) : null,
+    open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Nog ${open.length} ${open.length === 1 ? 'punt' : 'punten'} open. Elk punt vraagt een antwoord; bij ${M.DAGKEUZE[soort][1]} hoort een tekst.`) : null,
+    g.metingen.map((m, i) => h('section', { class: `punt${open.includes(m.kop) ? ' open' : ''}`, 'data-meting': m.kop },
+      h('h3', {}, m.kop),
+      h('input', { class: 'invoer', 'data-invoer': `meting-${i}`, type: 'text', inputmode: 'decimal', autocomplete: 'off', value: dc.metingen[m.kop] === undefined ? '' : dc.metingen[m.kop],
+        oninput: (e) => bewaarDag(soort, datum, (x) => { x.metingen[m.kop] = e.target.value; }, { teken: false }) }))),
+    g.punten.map((p, i) => dagPunt(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop))),
+    h('div', { class: 'onderbalk' },
+      gi > 0 ? h('button', { class: 'knop', id: 'vorige', onclick: () => ga(`#/dag/${soort}/${datum}/${gi - 1}`) }, 'Vorige') : null,
+      h('button', { class: 'knop hoofd', id: 'verder', onclick: verder }, laatste ? 'Afsluiten' : 'Volgende'))
+  ];
+}
+
+function dagSamenvatting(dc, groepen) {
+  // Op de dag zelf, en ook later zolang de dagcontrole nog niet verzonden is
+  // (bijvoorbeeld als het script ze weigert omdat een kolom hernoemd is).
+  const magCorrigeren = dc.datum === M.vandaag() || dc.status === 'klaar';
+  const rijen = [];
+  groepen.forEach((g) => {
+    g.metingen.forEach((m) => rijen.push([m.kop, dc.metingen[m.kop]]));
+    g.punten.forEach((p) => { const a = dc.antwoorden[p.kop] || {}; rijen.push([dagTitel(dc.soort, p)[0], a.ok === true ? 'OK' : a.tekst || '—']); });
+  });
+  return [
+    h('h2', {}, `${M.DAGNAAM[dc.soort]}: ${STATUSTEKST[dc.status]}`),
+    h('p', { class: 'stap' }, `${datumLang(dc.datum)} · afgesloten om ${dagEnUur(dc.afgeslotenOm)}${dc.rij ? `, rij ${dc.rij} in de sheet` : ''}`),
+    h('div', { class: 'kaart' }, h('table', { class: 'samenvatting' }, h('tbody', {}, rijen.map(([naam, waarde]) => h('tr', {}, h('td', {}, naam), h('td', {}, String(waarde))))))),
+    h('div', { class: 'knoppen' },
+      h('button', { class: 'knop hoofd', onclick: () => ga('#/') }, 'Terug naar start'),
+      magCorrigeren ? h('button', { class: 'knop', id: 'corrigeren', onclick: async () => {
+        await db.werkBij('dagcontroles', dc.id, (x) => { x.status = 'bezig'; x.versie += 1; });
+        await sync.dagUitWachtrij(dc.id);
+        ga(`#/dag/${dc.soort}/${dc.datum}/0`);
       } }, 'Corrigeren') : null),
     !magCorrigeren ? h('p', { class: 'klein zacht' }, 'Corrigeren in de app kan alleen op de dag van de controle. Latere correcties gebeuren in de sheet.') : null
   ];
@@ -624,12 +1143,18 @@ async function schermEinde() {
   const controles = (await db.alle('controles')).filter((c) => c.datum === M.vandaag());
   const onaf = controles.filter((c) => M.DELEN.some((d) => isOpenDeel(c.delen[d])));
   const alle = await db.alle('controles');
-  const groen = t.aantal === 0 && !alle.some((c) => M.DELEN.some((d) => c.delen[d].status === 'klaar'));
+  const alleDagen = await db.alle('dagcontroles');
+  const dagen = M.DAGSOORTEN.map((soort) => ({ soort, dc: alleDagen.find((x) => x.id === M.dagId(soort)) }));
+  const dagEerder = alleDagen.filter((x) => x.datum !== M.vandaag() && x.status === 'bezig').sort((a, b) => a.datum.localeCompare(b.datum));
+  const groen = t.aantal === 0 && !alle.some((c) => M.DELEN.some((d) => c.delen[d].status === 'klaar')) && !alleDagen.some((x) => x.status === 'klaar');
+  const dagNietGedaan = dagen.filter((x) => snapshot && snapshot.dag && snapshot.dag[x.soort] && (!x.dc || isOpenDeel(x.dc)));
   return [
     h('div', { class: `eind${groen ? ' groen' : ''}`, id: 'eind', 'data-groen': String(groen) },
       h('strong', {}, groen ? 'Alles verzonden' : 'Nog niet alles verzonden'),
       groen ? `${controles.length} ${controles.length === 1 ? 'controle' : 'controles'} vandaag. De tablet mag weg.`
-        : `${t.controles} ${t.controles === 1 ? 'controle wacht' : 'controles wachten'} op verzenden. Hou de app open tot dit scherm groen is.`),
+        : `Er ${t.aantal === 1 ? 'wacht nog 1 item' : `wachten nog ${t.aantal} items`} op verzenden (controles, dagcontroles en foto's). Hou de app open tot dit scherm groen is.`),
+    dagNietGedaan.length ? h('div', { class: 'melding wacht', id: 'dag-niet-gedaan' }, `Vandaag nog niet afgesloten: ${dagNietGedaan.map((x) => M.DAGNAAM[x.soort]).join(' en ')}.`) : null,
+    dagEerder.length ? h('div', { class: 'melding wacht', id: 'dag-eerder-open' }, `Begonnen en niet afgesloten op een eerdere dag: ${dagEerder.map((x) => `${M.DAGNAAM[x.soort]} (${datumLang(x.datum)})`).join(', ')}. Zie het startscherm.`) : null,
     !groen && t.fout ? h('div', { class: 'melding fout' }, `Laatste fout: ${t.fout}`) : null,
     !groen ? h('div', { class: 'knoppen' }, h('button', { class: 'knop hoofd', onclick: () => sync.verwerk({ handmatig: true }) }, 'Nu synchroniseren')) : null,
     onaf.length ? [h('div', { class: 'melding wacht', id: 'onafgewerkt' }, `${onaf.length} ${onaf.length === 1 ? 'controle is' : 'controles zijn'} niet volledig ingevuld:`), onaf.map(rijControle)] : null
@@ -654,7 +1179,7 @@ async function ververs({ stil = false } = {}) {
     const zonder = Object.keys(M.VELDEN).filter((id) => M.VELDEN[id].soort === 'keuze' && !M.VELDEN[id].reserve && !(s.velden[id] && s.velden[id].keuzes && s.velden[id].keuzes.length));
     if (zonder.length) throw new Error(`In de sheet ontbreekt de keuzelijst voor: ${zonder.map((id) => M.label(id, s)).join(', ')}.`);
     // Pas na een volledig antwoord wordt de vorige snapshot vervangen.
-    const vers = { orders: s.orders, pallets: s.pallets, velden: s.velden, waarschuwingen: s.waarschuwingen || [], bron: s.bron || {}, opgehaaldOm: Date.now() };
+    const vers = { orders: s.orders, pallets: s.pallets, velden: s.velden, lijnen: Array.isArray(s.lijnen) ? s.lijnen : null, dag: s.dag || {}, waarschuwingen: s.waarschuwingen || [], bron: s.bron || {}, opgehaaldOm: Date.now() };
     await db.zet('referentie', vers, 'snapshot');
     snapshot = vers;
     await pasOpenControlesAan();
@@ -680,12 +1205,12 @@ async function pasOpenControlesAan() {
     const vers = {};
     M.OPZOEKVELDEN.forEach((k) => { vers[k] = treffer.item[k] || ''; });
     const verschil = M.OPZOEKVELDEN.some((k) => vers[k] !== (c.opzoek[k] || ''));
-    if (!verschil && c.bron !== 'vrij' && c.lijn === (treffer.item.lijn || '')) continue;
+    if (!verschil && c.bron !== 'vrij' && (c.lijnZelf || c.lijn === (treffer.item.lijn || ''))) continue;
     await db.werkBij('controles', c.appId, (x) => {
       if (x.bron !== 'vrij' && verschil) x.wijziging = { oud: x.wijziging ? x.wijziging.oud : { ...x.opzoek }, om: Date.now() };
       x.opzoek = vers;
       x.bron = treffer.bron;
-      x.lijn = treffer.item.lijn || '';
+      if (!x.lijnZelf) x.lijn = treffer.item.lijn || ''; // een lijn die de controleur zelf koos, blijft staan
     });
   }
 }
@@ -700,9 +1225,21 @@ async function pasOpenControlesAan() {
  */
 async function opruimen() {
   const grens = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  // Een controle met een foto die nog niet verzonden is, blijft ook staan:
+  // anders zou de foto mee verdwijnen.
+  const nogTeVerzenden = new Set((await db.alle('fotos')).filter((f) => f.status !== 'verzonden').map((f) => f.appId));
   for (const c of await db.alle('controles')) {
-    const veilig = M.DELEN.every((d) => c.delen[d].status === 'verzonden' || c.delen[d].status === 'open');
+    const veilig = M.DELEN.every((d) => c.delen[d].status === 'verzonden' || c.delen[d].status === 'open') && !nogTeVerzenden.has(c.appId);
     if (veilig && c.aangemaaktOm < grens) await db.wis('controles', c.appId);
+  }
+  // Foto's: weg als ze verzonden en oud zijn, of als hun controle niet meer bestaat.
+  const bestaand = new Set((await db.alle('controles')).map((c) => c.appId));
+  for (const f of await db.alle('fotos')) {
+    const oud = f.status === 'verzonden' && (f.verzondenOm || f.genomenOm) < grens;
+    if (oud || !bestaand.has(f.appId)) { await db.wis('fotos', f.id); await db.wis('wachtrij', `foto:${f.id}`); }
+  }
+  for (const dc of await db.alle('dagcontroles')) {
+    if ((dc.status === 'verzonden' || dc.status === 'open') && dc.aangemaaktOm < grens) await db.wis('dagcontroles', dc.id);
   }
 }
 
@@ -725,17 +1262,38 @@ async function bewaardeBestanden() {
   } catch (e) { return null; }
 }
 
+/**
+ * Kijkt of er een nieuwe versie van de app online staat. Chrome doet dat zelf
+ * alleen bij het laden van de pagina; een geïnstalleerde app blijft soms dagen
+ * open staan. Daarom ook telkens als de app weer in beeld komt, hoogstens één
+ * keer per uur. Geeft 'nieuw', 'geen' of 'mislukt' terug.
+ */
+async function zoekNieuweVersie({ nu = false } = {}) {
+  if (!swReg) return 'mislukt';
+  if (!nu && Date.now() - laatsteVersieCheck < 60 * 60 * 1000) return 'geen';
+  if (!navigator.onLine) return 'mislukt';
+  laatsteVersieCheck = Date.now();
+  try {
+    await swReg.update();
+  } catch (e) {
+    return 'mislukt';
+  }
+  return swReg.installing || swReg.waiting ? 'nieuw' : 'geen';
+}
+
 async function registreerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {
     const reg = await navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' });
+    swReg = reg;
     const kijk = () => {
       if (reg.waiting && navigator.serviceWorker.controller) { swWacht = reg.waiting; werkBalkBij(); }
     };
+    const volg = (sw) => { if (sw) sw.addEventListener('statechange', kijk); };
     kijk();
-    reg.addEventListener('updatefound', () => {
-      if (reg.installing) reg.installing.addEventListener('statechange', kijk);
-    });
+    // Een nieuwe versie kan al aan het installeren zijn voor deze code luistert.
+    volg(reg.installing);
+    reg.addEventListener('updatefound', () => volg(reg.installing));
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (herlaadNaUpdate) location.reload(); });
     controleerCache();
   } catch (e) {
@@ -744,6 +1302,11 @@ async function registreerServiceWorker() {
 }
 
 async function start() {
+  db.opGeblokkeerd(() => {
+    $scherm.replaceChildren(h('div', { class: 'melding wacht', id: 'opslag-wacht' },
+      'De app wordt bijgewerkt, maar een ander tabblad of venster van QC Rondgang staat nog open met de vorige versie. Sluit dat; daarna gaat het hier vanzelf verder. Er gaat niets verloren.'));
+  });
+  db.opVersieWissel(() => location.reload());
   ingesteld = !!((await db.instelling('url')) && (await db.instelling('sleutel')));
   snapshot = (await db.haal('referentie', 'snapshot')) || null;
 
@@ -760,13 +1323,14 @@ async function start() {
     toonOpen = toonOpenNa;
     toonOpenNa = false;
     bevestigWeg = null;
+    document.querySelectorAll('.kiezer').forEach((el) => el.remove()); // een keuzescherm hoort bij het scherm eronder
     // Een melding hoort bij het scherm waar ze getoond werd.
     if (melding) { if (melding.over > 0) melding.over -= 1; else melding = null; }
     toon();
   });
   window.addEventListener('online', () => { werkBalkBij(); sync.verwerk({ handmatig: true }); controleerCache(); });
   window.addEventListener('offline', () => werkBalkBij());
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) sync.verwerk(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { sync.verwerk(); zoekNieuweVersie(); } });
   setInterval(() => sync.verwerk(), 60 * 1000);
 
   if ('BroadcastChannel' in window) {

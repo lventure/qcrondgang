@@ -1,7 +1,7 @@
 // Test van apps-script/Code.gs tegen de nagebootste sheet. Uitvoeren: node test/script.test.cjs
 const assert = require('assert');
-const { laadScript, letterNaarKolom } = require('./nep-apps-script.cjs');
-const { maakFixture, FORMULE_KOLOMMEN } = require('./fixture.cjs');
+const { laadScript, letterNaarKolom, lijstRegel } = require('./nep-apps-script.cjs');
+const { maakFixture, OPERATOREN, FORMULE_KOLOMMEN, WERK_KOPPEN, MAGAZIJN_PUNTEN, dag, iso } = require('./fixture.cjs');
 
 let geslaagd = 0;
 const fouten = [];
@@ -32,15 +32,109 @@ const BENEDEN = { deel: 'beneden', datum: '2026-10-02', code: '260102', afgeslot
 
 console.log('Apps Script tegen de nagebootste sheet');
 
-test('installeer voegt 10 kolommen toe vanaf AY en maakt een sleutel', () => {
+test('installeer voegt 11 kolommen toe vanaf AY en maakt een sleutel', () => {
   const { fx, sleutel, script } = opzet();
-  assert.strictEqual(fx.tab.getMaxColumns(), 60);
+  assert.strictEqual(fx.tab.getMaxColumns(), 61);
   assert.strictEqual(fx.tab.cel(2, 51).v, 'App-ID');
   assert.strictEqual(fx.tab.cel(2, 60).v, 'Gezien: allergenen (boven)');
+  assert.strictEqual(fx.tab.cel(2, 61).v, 'Foto opmerking');
   assert.ok(/^[0-9a-f]{64}$/.test(sleutel));
   script.roep('installeer'); // tweede keer: niets erbij, zelfde sleutel
-  assert.strictEqual(fx.tab.getMaxColumns(), 60);
+  assert.strictEqual(fx.tab.getMaxColumns(), 61);
   assert.strictEqual(script.props.SLEUTEL, sleutel);
+});
+
+test('een sheet die de kolommen van fase 1 al heeft, krijgt alleen "Foto opmerking" erbij', () => {
+  const fx = maakFixture();
+  const script = laadScript({ actief: fx.qc, opId: fx.opId });
+  script.roep('installeer');
+  // terug naar de toestand van fase 1: de laatste kolom bestaat nog niet
+  for (const k of [...fx.tab.cellen.keys()]) if (k.endsWith(',61')) fx.tab.cellen.delete(k);
+  fx.tab.maxKolommen = 60;
+  const a = script.post({ sleutel: script.props.SLEUTEL, actie: 'controle', appId: ID1, ...BENEDEN });
+  assert.strictEqual(a.code, 'INDELING', 'zonder installeer() weigert het script te schrijven en zegt het welke kolom ontbreekt');
+  assert.ok(/Foto opmerking/i.test(a.fout), a.fout);
+  script.logboek.length = 0;
+  script.roep('installeer');
+  assert.strictEqual(fx.tab.getMaxColumns(), 61);
+  assert.ok(script.logboek.some((l) => /Toegevoegd vanaf kolom BI: Foto opmerking/.test(l)), script.logboek.join('\n'));
+  assert.strictEqual(script.post({ sleutel: script.props.SLEUTEL, actie: 'controle', appId: ID1, ...BENEDEN }).ok, true);
+});
+
+test('lijn: de keuze van de controleur vervangt de formule van de sheet in die rij; zonder keuze blijft de formule', () => {
+  const { fx, script, post, w } = opzet();
+  const f = (r) => fx.tab.cel(r, 2).f;
+  const s = post({ actie: 'snapshot' });
+  assert.deepStrictEqual(s.lijnen, ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'MUL', 'STICKS', 'GELPACK 1', 'GELPACK 2', 'VOLPAK']);
+  assert.deepStrictEqual(s.waarschuwingen, []);
+  // zonder lijn (pallet, oudere app): de formule blijft
+  post({ actie: 'controle', appId: ID1, ...BOVEN });
+  assert.strictEqual(f(5), '=FORMULE_B(I5)');
+  // met lijn: de waarde staat in B, bij Boven en later bij Beneden (gewijzigd)
+  assert.strictEqual(post({ actie: 'controle', appId: ID2, ...BOVEN, code: '260103', lijn: 'L8' }).ok, true);
+  assert.deepStrictEqual([w(6, 'B'), f(6)], ['L8', '']);
+  post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', lijn: ' GELPACK  1 ' });
+  assert.deepStrictEqual([w(6, 'B'), f(6)], ['GELPACK 1', '']);
+  assert.strictEqual(w(6, 'AS'), 7, 'Boven is onaangeroerd');
+  // de andere formulekolommen van de rij blijven formules
+  assert.strictEqual(fx.tab.cel(6, letterNaarKolom('J')).f, '=FORMULE_J(I6)');
+  assert.strictEqual(post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', lijn: 'x'.repeat(31) }).code, 'VERZOEK');
+  // eigen lijst via Script Property LIJNEN
+  script.props.LIJNEN = 'L1, L2 ,,VOLPAK,L1';
+  assert.deepStrictEqual(post({ actie: 'snapshot' }).lijnen, ['L1', 'L2', 'VOLPAK']);
+});
+
+test('lijn: heeft kolom B een strenge keuzelijst, dan laat alleen die cel een andere waarde toe; ontbreekt de kolom, dan werkt de rest door', () => {
+  const { fx, post, w } = opzet();
+  for (let r = 3; r <= fx.tab.getMaxRows(); r++) fx.tab.cel(r, 2, true).dv = lijstRegel(['L1', 'L8']);
+  post({ actie: 'controle', appId: ID1, ...BOVEN, lijn: 'L8' });
+  assert.deepStrictEqual([w(5, 'B'), fx.tab.cel(5, 2).dv.getAllowInvalid()], ['L8', false]);
+  post({ actie: 'controle', appId: ID2, ...BOVEN, code: '260103', lijn: 'VOLPAK' });
+  assert.deepStrictEqual([w(6, 'B'), fx.tab.cel(6, 2).dv.getAllowInvalid(), fx.tab.cel(7, 2).dv.getAllowInvalid()], ['VOLPAK', true, false]);
+  // kop hernoemd: geen fout, een waarschuwing, en de controle komt gewoon in de sheet
+  fx.tab.cel(2, 2).v = 'Productielijn';
+  const s = post({ actie: 'snapshot' });
+  assert.strictEqual(s.ok, true);
+  assert.ok(s.waarschuwingen.some((x) => /Kolom "Lijn" niet gevonden/.test(x)), s.waarschuwingen.join(' | '));
+  const a = post({ actie: 'controle', appId: '33333333-3333-4333-8333-333333333333', ...BOVEN, code: '260104', lijn: 'L3' });
+  assert.deepStrictEqual([a.ok, w(7, 'I'), fx.tab.cel(7, 2).f], [true, 260104, '=FORMULE_B(I7)']);
+});
+
+test('lijn: een rij die het script toevoegt onder een rij met een gekozen lijn, krijgt de formule van de sheet terug', () => {
+  const { fx, post } = opzet();
+  // alle voorbereide rijen opvullen, de laatste met een gekozen lijn
+  let n = 0;
+  const id = () => `44444444-4444-4444-8444-${String(++n).padStart(12, '0')}`;
+  const laatsteVoorbereid = fx.tab.getMaxRows();
+  for (let r = 5; r <= laatsteVoorbereid; r++) assert.strictEqual(post({ actie: 'controle', appId: id(), ...BOVEN, code: String(270000 + r), lijn: r === laatsteVoorbereid ? 'MUL' : '' }).rij, r);
+  assert.strictEqual(fx.tab.cel(laatsteVoorbereid, 2).f, '');
+  const a = post({ actie: 'controle', appId: id(), ...BOVEN, code: '279999' });
+  assert.deepStrictEqual([a.ok, a.rij], [true, laatsteVoorbereid + 1]);
+  assert.strictEqual(fx.tab.cel(laatsteVoorbereid + 1, 2).f, `=FORMULE_B(I${laatsteVoorbereid + 1})`, 'de formule komt van de dichtste rij die ze nog had');
+  assert.strictEqual(fx.tab.waarde(laatsteVoorbereid + 1, 2), '');
+});
+
+test('operatoren: een naam buiten de lijst of meerdere namen komen in de cel; de keuzelijst van andere cellen blijft streng', () => {
+  const { fx, post, w } = opzet();
+  const dv = (r, l) => fx.tab.cel(r, letterNaarKolom(l)).dv;
+  // gewone keuze uit de lijst: de validatie blijft zoals ze was
+  post({ actie: 'controle', appId: ID1, ...BENEDEN });
+  assert.deepStrictEqual([w(5, 'Q'), w(5, 'R'), dv(5, 'Q').getAllowInvalid()], ['AB', '', false]);
+  // drie operatoren, waarvan één niet in de lijst
+  const a = post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', waarden: { ...BENEDEN.waarden, operator1: 'Jan (interim)', operator2: 'CD, EF' } });
+  assert.strictEqual(a.ok, true, a.fout);
+  assert.deepStrictEqual([w(6, 'Q'), w(6, 'R')], ['Jan (interim)', 'CD, EF']);
+  assert.deepStrictEqual([dv(6, 'Q').getAllowInvalid(), dv(6, 'R').getAllowInvalid()], [true, true], 'alleen deze twee cellen laten een andere waarde toe');
+  assert.deepStrictEqual(dv(6, 'Q').getCriteriaValues()[0], dv(5, 'Q').getCriteriaValues()[0], 'de keuzelijst zelf is niet gewijzigd');
+  assert.strictEqual(dv(7, 'Q').getAllowInvalid(), false);
+  // een andere kolom met een keuzelijst weigert nog altijd een onbekende waarde
+  const b = post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', afgeslotenOm: '2026-10-02T10:00:00.000Z', waarden: { ...BENEDEN.waarden, cProduct: 'misschien' } });
+  assert.strictEqual(b.ok, false);
+  // de snapshot geeft nog altijd de lijst uit de sheet
+  assert.deepStrictEqual(post({ actie: 'snapshot' }).velden.operator1.keuzes, OPERATOREN);
+  // correctie terug naar één operator uit de lijst
+  post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', afgeslotenOm: '2026-10-02T10:05:00.000Z', waarden: { ...BENEDEN.waarden, operator1: 'CD', operator2: '' } });
+  assert.deepStrictEqual([w(6, 'Q'), w(6, 'R')], ['CD', '']);
 });
 
 test('zonder of met verkeerde sleutel: geen gegevens en niets geschreven', () => {
@@ -344,7 +438,7 @@ test('met de Sheets API: zelfde snapshot, zonder de bronsheets te openen', () =>
   assert.deepStrictEqual(s.velden, gewoon.velden);
   assert.deepStrictEqual(s.waarschuwingen, []);
   assert.strictEqual(script.teller.openById, 0, 'geen enkele bronsheet geopend');
-  assert.strictEqual(script.teller.api, 1 + 10 + 1 + 6 + 2, 'per bron de koprijen en de nodige kolommen, plus twee kolommen van het QC-tabblad');
+  assert.strictEqual(script.teller.api, 1 + 10 + 1 + 6 + 2 + 1 + 3, 'per bron de koprijen en de nodige kolommen, twee kolommen van het QC-tabblad en vier bereiken van de dagtabbladen');
 });
 
 test('Sheets API zonder toegang: de tragere weg neemt over en de app krijgt een waarschuwing', () => {
@@ -415,6 +509,311 @@ test('meet() schrijft niets en meet de drie wegen', () => {
   // na meet() staat de klok weer uit
   assert.strictEqual(script.post({ sleutel: script.props.SLEUTEL, actie: 'snapshot' }).ok, true);
 });
+
+// ---------------------------------------------------------------- fase 2: foto's
+const FOTO = { actie: 'foto', appId: ID1, soort: 'zk', fotoId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', datum: '2026-10-02', code: '260102', lijn: 'L8', data: Buffer.from('x'.repeat(300)).toString('base64') };
+const link = (fx, r, l) => (fx.tab.cel(r, letterNaarKolom(l)) || {}).link || '';
+
+for (const metApi of [false, true]) {
+  const naam = metApi ? ' (met Sheets API)' : '';
+  const opzetF = () => {
+    const fx = maakFixture();
+    const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst: metApi });
+    script.roep('installeer');
+    return { fx, script, post: (obj) => script.post({ sleutel: script.props.SLEUTEL, ...obj }), w: (r, l) => fx.tab.waarde(r, letterNaarKolom(l)) };
+  };
+
+  test('installeer maakt de map voor de foto\'s naast de sheet, één keer' + naam, () => {
+    const { script } = opzetF();
+    const id = script.props.FOTO_MAP_ID;
+    assert.ok(id);
+    assert.strictEqual(script.drive.perId[id].naam, "QC foto's");
+    assert.strictEqual(script.drive.perId[id].ouder.naam, 'Kwaliteit');
+    script.roep('installeer');
+    assert.strictEqual(script.props.FOTO_MAP_ID, id);
+    assert.strictEqual(script.drive.sheetMap.mappen.length, 1);
+    assert.ok(script.logboek.some((l) => /Map voor de foto's: https:\/\/drive\.google\.com\/drive\/folders\//.test(l)));
+  });
+
+  test('foto voor een controle die nog niet in de sheet staat: later opnieuw, niets bewaard' + naam, () => {
+    const { script, post } = opzetF();
+    const a = post(FOTO);
+    assert.deepStrictEqual([a.ok, a.code, a.tijdelijk], [false, 'LATER', true]);
+    assert.strictEqual(script.drive.alleBestanden().length, 0);
+  });
+
+  test('Beneden zet "volgt", de foto vervangt dat door een link, en een herhaling maakt geen tweede bestand' + naam, () => {
+    const { fx, script, post, w } = opzetF();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'nvt' } });
+    assert.deepStrictEqual([w(5, 'AK'), w(5, 'AL')], ['volgt', '']);
+    const a = post(FOTO);
+    assert.deepStrictEqual([a.ok, a.rij, a.nieuw, a.fotoId, a.soort], [true, 5, true, FOTO.fotoId, 'zk']);
+    assert.strictEqual(w(5, 'AK'), 'Foto ZK');
+    assert.ok(/^https:\/\/drive\.google\.com\/file\/d\//.test(link(fx, 5, 'AK')));
+    const b = post(FOTO);
+    assert.deepStrictEqual([b.ok, b.nieuw], [true, false]);
+    const bestanden = script.drive.alleBestanden();
+    assert.strictEqual(bestanden.length, 1);
+    assert.deepStrictEqual([bestanden[0].map, bestanden[0].naam, bestanden[0].bytes], ['2026-10', '2026-10-02_L8_260102_ZK_aaaaaaaa.jpg', 300]);
+    assert.strictEqual(link(fx, 5, 'AK'), bestanden[0].url);
+    // een correctie van Beneden laat de link staan
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'nvt' } });
+    assert.strictEqual(w(5, 'AK'), 'Foto ZK');
+    assert.strictEqual(link(fx, 5, 'AK'), bestanden[0].url);
+    // niets anders in de rij aangeraakt
+    assert.strictEqual(w(5, 'Q'), 'AB');
+    assert.strictEqual(w(6, 'AK'), '');
+  });
+
+  test('foto etiket komt in AL; opnieuw genomen: de cel wijst naar de nieuwe en de oude gaat naar de prullenbak' + naam, () => {
+    const { fx, script, post, w } = opzetF();
+    const inPrullenbak = () => script.drive.alleBestanden().filter((b) => b.prullenbak).map((b) => b.naam).sort();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'volgt' } });
+    const a = post({ ...FOTO, soort: 'etiket', fotoId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' });
+    assert.deepStrictEqual([a.ok, a.oudWeg], [true, false]);
+    assert.strictEqual(w(5, 'AL'), 'Foto etiket');
+    assert.strictEqual(w(5, 'AK'), 'volgt');
+    const eerste = link(fx, 5, 'AL');
+    // dezelfde foto nog eens (verloren bevestiging): niets naar de prullenbak
+    assert.strictEqual(post({ ...FOTO, soort: 'etiket', fotoId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }).oudWeg, false);
+    assert.deepStrictEqual(inPrullenbak(), []);
+    const b = post({ ...FOTO, soort: 'etiket', fotoId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+    assert.strictEqual(b.oudWeg, true);
+    assert.notStrictEqual(link(fx, 5, 'AL'), eerste);
+    assert.deepStrictEqual(script.drive.alleBestanden().map((x) => x.naam).sort(), ['2026-10-02_L8_260102_etiket_bbbbbbbb.jpg', '2026-10-02_L8_260102_etiket_cccccccc.jpg']);
+    assert.deepStrictEqual(inPrullenbak(), ['2026-10-02_L8_260102_etiket_bbbbbbbb.jpg']);
+    // een verzoek van de eerste foto komt nog eens aan, te laat (zonder tijdstip: oude app): het script kan dat niet weten en volgt het verzoek
+    // met tijdstip: de nieuwere foto blijft staan en er komt geen bestand bij
+    const C = { ...FOTO, soort: 'etiket', fotoId: '99999999-9999-4999-8999-999999999999', genomenOm: '2026-10-02T09:30:00.000Z' };
+    const D = { ...FOTO, soort: 'etiket', fotoId: '88888888-8888-4888-8888-888888888888', genomenOm: '2026-10-02T09:35:00.000Z' };
+    post(C);
+    assert.strictEqual(post(D).oudWeg, true);
+    const naD = link(fx, 5, 'AL');
+    const aantal = script.drive.alleBestanden().length;
+    const laat = post(C);
+    assert.deepStrictEqual([laat.ok, laat.verouderd], [true, true], 'een oudere foto vervangt nooit een nieuwere');
+    assert.strictEqual(link(fx, 5, 'AL'), naD);
+    assert.strictEqual(script.drive.alleBestanden().length, aantal);
+    assert.strictEqual(script.drive.alleBestanden().find((x) => /88888888/.test(x.naam)).prullenbak, false);
+    assert.strictEqual(post(D).nieuw, false, 'de nieuwste foto nog eens: zelfde bestand');
+    // etiket alsnog "niet van toepassing": de cel wordt leeg en ook die foto gaat naar de prullenbak
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, afgeslotenOm: '2026-10-02T09:50:00.000Z', fotos: { zk: 'volgt', etiket: 'nvt' } });
+    assert.deepStrictEqual([w(5, 'AL'), link(fx, 5, 'AL')], ['', '']);
+    assert.strictEqual(script.drive.alleBestanden().filter((x) => !x.prullenbak).length, 0, 'geen enkele foto van het etiket staat nog buiten de prullenbak');
+  });
+
+  test('alleen een eigen foto van dezelfde controle en soort gaat naar de prullenbak, nooit een ander bestand' + naam, () => {
+    const { fx, script, post } = opzetF();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'nvt' } });
+    post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', fotos: { zk: 'volgt', etiket: 'nvt' } });
+    post(FOTO);
+    const vanControle1 = link(fx, 5, 'AK');
+    // iemand plakt in de rij van controle 2 een link naar de foto van controle 1, en in een andere rij een eigen document
+    const map = script.drive.perId[script.props.FOTO_MAP_ID];
+    const vreemd = map.createFile({ naam: 'offerte.pdf', type: 'application/pdf', bytes: [1, 2, 3] });
+    Object.assign(fx.tab.cel(6, letterNaarKolom('AK')), { v: 'Foto ZK', link: vanControle1 });
+    const a = post({ ...FOTO, appId: ID2, code: '260103', fotoId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' });
+    assert.deepStrictEqual([a.ok, a.oudWeg], [true, false], 'de foto van een andere controle blijft staan');
+    Object.assign(fx.tab.cel(6, letterNaarKolom('AK')), { v: 'Foto ZK', link: vreemd.getUrl() });
+    const b = post({ ...FOTO, appId: ID2, code: '260103', fotoId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' });
+    assert.deepStrictEqual([b.ok, b.oudWeg], [true, false], 'een bestand dat het script niet zelf bewaard heeft, blijft staan');
+    assert.deepStrictEqual(script.drive.alleBestanden().filter((x) => x.prullenbak).length, 0);
+  });
+
+  test('foto opmerking: optionele derde foto in een eigen kolom' + naam, () => {
+    const { fx, script, post, w } = opzetF();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'nvt', opmerking: 'volgt' } });
+    assert.deepStrictEqual([w(5, 'AK'), w(5, 'AL'), w(5, 'BI')], ['volgt', '', 'volgt']);
+    const a = post({ ...FOTO, soort: 'opmerking', fotoId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' });
+    assert.strictEqual(a.ok, true, a.fout);
+    assert.deepStrictEqual([w(5, 'BI'), link(fx, 5, 'BI')], ['Foto opmerking', script.drive.alleBestanden()[0].url]);
+    assert.strictEqual(script.drive.alleBestanden()[0].naam, '2026-10-02_L8_260102_opmerking_ffffffff.jpg');
+    assert.strictEqual(w(5, 'AK'), 'volgt');
+    // een oudere versie van de app kent de derde foto niet: de cel blijft onaangeroerd
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, afgeslotenOm: '2026-10-02T09:50:00.000Z', fotos: { zk: 'volgt', etiket: 'nvt' } });
+    assert.strictEqual(w(5, 'BI'), 'Foto opmerking');
+    // gewist in de app: cel leeg, foto naar de prullenbak
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, afgeslotenOm: '2026-10-02T09:55:00.000Z', fotos: { zk: 'volgt', etiket: 'nvt', opmerking: 'nvt' } });
+    assert.deepStrictEqual([w(5, 'BI'), script.drive.alleBestanden()[0].prullenbak], ['', true]);
+  });
+
+  test('ongeldige foto-verzoeken; bestandsnaam zonder vreemde tekens' + naam, () => {
+    const { script, post } = opzetF();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, code: 'X/9 9' , gezien: null });
+    assert.strictEqual(post({ ...FOTO, soort: 'selfie' }).code, 'VERZOEK');
+    assert.strictEqual(post({ ...FOTO, fotoId: 'x' }).code, 'VERZOEK');
+    assert.strictEqual(post({ ...FOTO, data: '' }).code, 'VERZOEK');
+    assert.strictEqual(post({ ...FOTO, sleutel: 'fout' }).code, 'SLEUTEL');
+    assert.strictEqual(script.drive.alleBestanden().length, 0);
+    assert.strictEqual(post({ ...FOTO, code: 'X/9 9', lijn: '' }).ok, true);
+    assert.strictEqual(script.drive.alleBestanden()[0].naam, '2026-10-02_x_X-9-9_ZK_aaaaaaaa.jpg');
+  });
+
+  test('rij verschuift terwijl de foto bewaard wordt: geen link in de rij van een andere controle, de herhaling zet ze juist' + naam, () => {
+    const { fx, script, post, w } = opzetF();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'nvt' } });
+    post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103', fotos: { zk: 'volgt', etiket: 'nvt' } });
+    const wissel = (a, b) => {
+      const na = new Map();
+      for (const [k, x] of fx.tab.cellen) { const [r, c] = k.split(',').map(Number); na.set((r === a ? b : r === b ? a : r) + ',' + c, x); }
+      fx.tab.cellen = na;
+    };
+    script.drive.bijMaken = () => { script.drive.bijMaken = null; wissel(5, 6); }; // iemand sorteert tijdens het bewaren
+    const a = post(FOTO);
+    assert.deepStrictEqual([a.ok, a.code, a.tijdelijk], [false, 'BEZET', true]);
+    assert.deepStrictEqual([w(5, 'AK'), link(fx, 5, 'AK'), w(6, 'AK'), link(fx, 6, 'AK')], ['volgt', '', 'volgt', ''], 'nog nergens een link');
+    const b = post(FOTO);
+    assert.deepStrictEqual([b.ok, b.rij, b.nieuw], [true, 6, false]);
+    assert.strictEqual(script.drive.alleBestanden().length, 1, 'geen tweede bestand');
+    assert.deepStrictEqual([w(6, 'AK'), link(fx, 6, 'AK'), w(5, 'AK'), link(fx, 5, 'AK')], ['Foto ZK', script.drive.alleBestanden()[0].url, 'volgt', '']);
+  });
+
+  test('storing bij Drive of map in de prullenbak: geen tweede map, de tablet probeert later opnieuw' + naam, () => {
+    const { script, post, w } = opzetF();
+    post({ actie: 'controle', appId: ID1, ...BENEDEN, fotos: { zk: 'volgt', etiket: 'nvt' } });
+    const id = script.props.FOTO_MAP_ID;
+    script.drive.storing = true;
+    const a = post(FOTO);
+    assert.deepStrictEqual([a.ok, a.code], [false, 'FOUT']);
+    assert.ok(/niet bereikbaar/.test(a.fout), a.fout);
+    script.drive.storing = false;
+    assert.strictEqual(script.props.FOTO_MAP_ID, id);
+    assert.strictEqual(script.drive.sheetMap.mappen.length, 1);
+    assert.strictEqual(w(5, 'AK'), 'volgt');
+    script.drive.perId[id].prullenbak = true;
+    const b = post(FOTO);
+    assert.ok(b.ok === false && /prullenbak/.test(b.fout), b.fout);
+    assert.strictEqual(script.drive.alleBestanden().length, 0);
+    assert.strictEqual(script.slot.bezet, false, 'het slot is vrijgegeven na een fout');
+    // een maandmap of bestand in de prullenbak wordt niet hergebruikt
+    script.drive.perId[id].prullenbak = false;
+    assert.strictEqual(post(FOTO).ok, true);
+    const maand = script.drive.perId[id].mappen[0];
+    maand.bestanden[0].prullenbak = true;
+    assert.deepStrictEqual([post(FOTO).nieuw, maand.bestanden.length], [true, 2], 'bestand in de prullenbak: nieuw bestand');
+    maand.prullenbak = true;
+    assert.strictEqual(post(FOTO).nieuw, true);
+    assert.strictEqual(script.drive.perId[id].mappen.length, 2, 'maandmap in de prullenbak: nieuwe maandmap');
+    script.drive.perId[id].prullenbak = true;
+    // de map is echt weg: nieuweFotoMap() maakt er bewust een nieuwe
+    script.roep('nieuweFotoMap');
+    assert.notStrictEqual(script.props.FOTO_MAP_ID, id);
+    assert.strictEqual(post(FOTO).ok, true);
+    assert.strictEqual(w(5, 'AK'), 'Foto ZK');
+  });
+
+  // -------------------------------------------------------------- fase 3: dagtabbladen
+  const VANDAAG = iso(dag(0));
+  const werkPunten = (afwijking) => WERK_KOPPEN.map((k) => ({ kop: k.split('\n')[0], ok: true })).map((p) => (afwijking && p.kop === afwijking.kop ? { kop: p.kop, ok: false, tekst: afwijking.tekst } : p));
+  const magPunten = (nok) => MAGAZIJN_PUNTEN.filter((p) => p.actief).map((p) => (nok && p.ok === nok.ok ? { kop: p.kop, ok: false, tekst: nok.tekst } : { kop: p.kop, ok: true }));
+  const METINGEN = [{ kop: 'Temperatuur magazijn (in C°)', waarde: '21,5' }, { kop: 'Temperatuur Koelkast eetzaal', waarde: '3' }, { kop: 'Luchtvochtigheid magazijn (in %)20,7', waarde: '48' }];
+
+  test('snapshot geeft de controlepunten van de twee dagtabbladen' + naam, () => {
+    const { post } = opzetF();
+    const s = post({ actie: 'snapshot' });
+    assert.deepStrictEqual(s.waarschuwingen, []);
+    assert.strictEqual(s.dag.werk.punten.length, 9);
+    assert.deepStrictEqual(s.dag.werk.punten[0], { kop: 'Trechter 1 - Vierkant', hulp: 'Mes ok?' });
+    assert.deepStrictEqual(s.dag.werk.punten[4], { kop: 'Werk- & poetsmateriaal L4', hulp: 'Platte schroevendraaier · Vloerborstel · ok?' });
+    assert.deepStrictEqual(s.dag.werk.metingen, []);
+    assert.deepStrictEqual(s.dag.magazijn.metingen.map((m) => m.kop), METINGEN.map((m) => m.kop));
+    assert.deepStrictEqual(s.dag.magazijn.punten.map((p) => p.kop), MAGAZIJN_PUNTEN.filter((p) => p.actief).map((p) => p.kop), 'het punt zonder selectievakjes telt niet mee');
+  });
+
+  test('werkmaterialen: rij van de datum, OK of de opmerking, "Ja" in de laatste kolom; opnieuw verzenden overschrijft' + naam, () => {
+    const { fx, post } = opzetF();
+    const ww = (r, c) => fx.werk.waarde(r, c);
+    const a = post({ actie: 'dagcontrole', soort: 'werk', datum: VANDAAG, afgeslotenOm: new Date().toISOString(), punten: werkPunten({ kop: 'Mottenval L4', tekst: '6 motten' }) });
+    assert.deepStrictEqual(a, { ok: true, soort: 'werk', datum: VANDAAG, rij: 10, nieuw: false });
+    assert.deepStrictEqual([ww(10, 2), ww(10, 5), ww(10, 10), ww(10, 11)], ['OK', 'OK', '6 motten', 'Ja']);
+    assert.strictEqual(ww(10, 1).getTime(), dag(0).getTime(), 'de datum blijft zoals ze stond');
+    assert.strictEqual(ww(9, 2), '');
+    assert.strictEqual(ww(11, 2), '');
+    const b = post({ actie: 'dagcontrole', soort: 'werk', datum: VANDAAG, afgeslotenOm: new Date().toISOString(), punten: werkPunten({ kop: 'Takel 1', tekst: '=hamer weg' }) });
+    assert.strictEqual(b.rij, 10);
+    assert.deepStrictEqual([ww(10, 8), ww(10, 10)], ['=hamer weg', 'OK']);
+    assert.strictEqual(fx.werk.cel(10, 8).f, '', 'een opmerking wordt nooit een formule');
+  });
+
+  test('werkmaterialen: datum na de laatste voorbereide dag komt in de volgende rij' + naam, () => {
+    const { fx, script, post } = opzetF();
+    const later = iso(dag(9));
+    const a = post({ actie: 'dagcontrole', soort: 'werk', datum: later, afgeslotenOm: new Date().toISOString(), punten: werkPunten() });
+    assert.deepStrictEqual([a.ok, a.rij, a.nieuw], [true, 16, true]);
+    assert.strictEqual(fx.werk.getMaxRows(), 16);
+    assert.strictEqual(fx.werk.waarde(16, 1).getTime(), dag(9).getTime());
+    assert.strictEqual(post({ actie: 'dagcontrole', soort: 'werk', datum: later, afgeslotenOm: new Date().toISOString(), punten: werkPunten() }).rij, 16);
+    // De leesactie loopt achter en ziet de nieuwe rij nog niet: niets schrijven, opnieuw proberen.
+    if (metApi) {
+      script.teller.apiVerberg = 16;
+      const c = post({ actie: 'dagcontrole', soort: 'werk', datum: later, afgeslotenOm: new Date().toISOString(), punten: werkPunten({ kop: 'Takel 1', tekst: 'x' }) });
+      assert.deepStrictEqual([c.ok, c.code, c.tijdelijk], [false, 'BEZET', true]);
+      assert.strictEqual(fx.werk.getMaxRows(), 16, 'geen tweede rij voor dezelfde dag');
+      assert.strictEqual(fx.werk.waarde(16, 8), 'OK');
+      script.teller.apiVerberg = 0;
+    }
+  });
+
+  test('dagtabblad met twee kolommen met dezelfde naam: duidelijke fout, niets geschreven' + naam, () => {
+    const { fx, post } = opzetF();
+    fx.werk.cel(2, 9, true).v = 'Takel 1\nKetting ok?'; // stond er "Takel 2"
+    const s = post({ actie: 'snapshot' });
+    assert.strictEqual(s.ok, true, 'de productiecontroles blijven werken');
+    assert.strictEqual(s.dag.werk, null);
+    assert.ok(s.waarschuwingen.some((x) => /twee kolommen met dezelfde naam: "Takel 1"/.test(x)), s.waarschuwingen.join(' | '));
+    assert.ok(s.dag.magazijn);
+    const a = post({ actie: 'dagcontrole', soort: 'werk', datum: VANDAAG, afgeslotenOm: 'x', punten: werkPunten() });
+    assert.strictEqual(a.code, 'INDELING');
+    assert.strictEqual(fx.werk.waarde(10, 2), '');
+  });
+
+  test('magazijn: nieuwe dag in de eerste vrije rij, metingen als getal, vakjes en "Opmerking NOK"' + naam, () => {
+    const { fx, post } = opzetF();
+    const mw = (r, l) => fx.mag.waarde(r, letterNaarKolom(l));
+    const mf = (r, l) => (fx.mag.cel(r, letterNaarKolom(l)) || {}).f || '';
+    const om = new Date(); om.setHours(9, 15, 0, 0);
+    const a = post({ actie: 'dagcontrole', soort: 'magazijn', datum: VANDAAG, afgeslotenOm: om.toISOString(), metingen: METINGEN, punten: magPunten({ ok: 'N', tekst: 'muizenkeutels aan poort 2' }) });
+    assert.deepStrictEqual(a, { ok: true, soort: 'magazijn', datum: VANDAAG, rij: 6, nieuw: true });
+    assert.deepStrictEqual([mw(6, 'B'), mw(6, 'C'), mw(6, 'D')], [21.5, 3, 48]);
+    assert.strictEqual(mw(6, 'A').getTime(), om.getTime(), 'kolom A krijgt het tijdstip van de controle, niet van het verzenden');
+    assert.strictEqual(mf(6, 'A'), '');
+    assert.deepStrictEqual([mw(6, 'E'), mw(6, 'F'), mw(6, 'G'), mf(6, 'G')], [true, false, 'NVT', '=if(E6;"NVT";)']);
+    assert.deepStrictEqual([mw(6, 'N'), mw(6, 'O'), mw(6, 'P'), mf(6, 'P')], [false, true, 'muizenkeutels aan poort 2', '']);
+    assert.deepStrictEqual([mw(6, 'K'), mw(6, 'L'), mw(6, 'M')], ['', '', ''], 'het punt zonder selectievakjes blijft leeg');
+    assert.strictEqual(mw(5, 'J'), 'heftruck vuil', 'de vorige dag is onaangeroerd');
+    assert.strictEqual(mw(7, 'B'), '');
+    // opnieuw verzenden met een correctie: zelfde rij, formule terug
+    const b = post({ actie: 'dagcontrole', soort: 'magazijn', datum: VANDAAG, afgeslotenOm: om.toISOString(), metingen: METINGEN, punten: magPunten() });
+    assert.deepStrictEqual([b.rij, b.nieuw], [6, false]);
+    assert.deepStrictEqual([mw(6, 'N'), mw(6, 'O'), mw(6, 'P'), mf(6, 'P')], [true, false, 'NVT', '=IF(N6;"NVT";)']);
+    assert.strictEqual(mw(7, 'B'), '');
+  });
+
+  test('magazijn: geen voorbereide rijen meer, rij erbij zonder de invoer van de rij erboven' + naam, () => {
+    const { fx, post } = opzetF();
+    const mw = (r, l) => fx.mag.waarde(r, letterNaarKolom(l));
+    [0, 1, 2, 3].forEach((n) => {
+      const d = iso(dag(n));
+      const a = post({ actie: 'dagcontrole', soort: 'magazijn', datum: d, afgeslotenOm: 'x', metingen: METINGEN, punten: magPunten(n === 2 ? { ok: 'E', tekst: 'pallet scheef' } : null) });
+      assert.deepStrictEqual([a.ok, a.rij], [true, 6 + n], d);
+    });
+    assert.strictEqual(fx.mag.getMaxRows(), 9);
+    assert.deepStrictEqual([mw(9, 'E'), mw(9, 'F'), mw(9, 'G'), mw(9, 'B')], [true, false, 'NVT', 21.5]);
+    assert.strictEqual(mw(8, 'G'), 'pallet scheef');
+  });
+
+  test('dagcontrole: onbekend punt, ontbrekende opmerking of meting worden geweigerd en er wordt niets geschreven' + naam, () => {
+    const { fx, post } = opzetF();
+    const voor = JSON.stringify([...fx.mag.cellen].map(([k, x]) => [k, String(x.v), x.f]));
+    const basis = { actie: 'dagcontrole', soort: 'magazijn', datum: VANDAAG, afgeslotenOm: 'x', metingen: METINGEN };
+    assert.strictEqual(post({ ...basis, punten: [{ kop: 'Bestaat niet', ok: true }] }).code, 'INDELING');
+    assert.strictEqual(post({ ...basis, punten: magPunten({ ok: 'E', tekst: '  ' }) }).code, 'VERZOEK');
+    assert.strictEqual(post({ ...basis, metingen: [{ kop: METINGEN[0].kop, waarde: 'warm' }], punten: magPunten() }).code, 'VERZOEK');
+    assert.strictEqual(post({ ...basis, soort: 'kelder', punten: magPunten() }).code, 'VERZOEK');
+    assert.strictEqual(post({ ...basis, punten: [{ kop: MAGAZIJN_PUNTEN[2].kop, ok: true }] }).code, 'INDELING', 'een punt zonder selectievakjes kan niet ingevuld worden');
+    assert.strictEqual(JSON.stringify([...fx.mag.cellen].map(([k, x]) => [k, String(x.v), x.f])), voor);
+  });
+}
 
 test('ongeldige verzoeken worden geweigerd', () => {
   const { post } = opzet();

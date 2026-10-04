@@ -1,8 +1,10 @@
-# QC Rondgang, fase 1
+# QC Rondgang
 
 Webapp voor de dagelijkse kwaliteitsrondgang op een Android-tablet. Werkt zonder verbinding en verzendt zelf zodra er verbinding is. Het volledige ontwerp staat in `bouwplan-qc-rondgang.md`, één map hoger. Dat document bevat spreadsheet-ID's en hoort niet in de publieke repository.
 
-Fase 1 bevat de productiecontroles (hoofdtabblad) zonder foto's: gegevens ophalen, Boven en Beneden invullen, wachtrij, app-ID tegen dubbels. Foto's (fase 2) en de twee dagtabbladen (fase 3) zitten er nog niet in. De controleur kan de sheet op de tablet dus nog niet loslaten.
+Gebouwd zijn fase 1 tot 3: de productiecontroles (Boven en Beneden, elk op één scherm), de twee foto's per controle, en de dagcontroles "Werkmaterialen boven" en "Magazijn en bufferzone". Fase 4, de overstap naar de echte sheet, is niet begonnen: alles hieronder gebeurt op de testkopie.
+
+Versies in deze map: script 2.2.0 (`apps-script/Code.gs`), app 1.3.0 (`docs/js/versie.js`).
 
 ## Wat staat waar
 
@@ -14,73 +16,96 @@ Fase 1 bevat de productiecontroles (hoofdtabblad) zonder foto's: gegevens ophale
 
 Er staan geen sleutels, geen spreadsheet-ID's en geen klant- of productnamen in de code. De ID's van de productielijst en de poco list leest het script uit de IMPORTRANGE-formules van de sheet. De testgegevens zijn verzonnen.
 
-## Stap 1: het script aan de testkopie hangen
+De app staat op `https://lventureapps.github.io/qcrondgang/` (organisatie `lventureapps`, repository `qcrondgang`, Pages uit `/docs`). Palletscan blijft op `https://lventure.github.io/palletscan/`. Twee installeerbare apps op hetzelfde adres gaan op Android niet samen; daarom staan ze apart.
 
-Doe dit op de testkopie, niet op de echte sheet.
+## Van fase 1 naar fase 2 en 3: wat je nu doet
 
-1. Open de testkopie en kies Extensies > Apps Script.
-2. Wis de inhoud van `Code.gs` in de editor en plak de inhoud van `apps-script/Code.gs`. Bewaar.
-3. Voeg de dienst Google Sheets API toe: links in de editor bij Diensten op + klikken, Google Sheets API kiezen, Toevoegen. Zonder die dienst werkt het script ook, maar veel trager. Gemeten met `meet` op 4 oktober 2026: orders en pallets ophalen duurt 2 seconden via de Sheets API en 62 seconden zonder.
-4. Kies bovenaan de functie `installeer` en klik op Uitvoeren. Google vraagt één keer toestemming; het script heeft toegang nodig tot deze sheet en tot de twee bronsheets.
-5. Open het uitvoeringslogboek. Daar staat:
-   - welke kolommen toegevoegd zijn (tien kolommen rechts van AX, vanaf AY);
-   - de regel `SLEUTEL (ingeven op de tablet, niet delen): …`. Noteer die.
-   - per controlepunt de gevonden kolomletter en de keuzelijst;
-   - het aantal orders en pallets, en of ze rechtstreeks uit de bronsheets komen.
-6. Kijk dat logboek na voor je verdergaat. Dit is de eerste keer dat het script tegen een echte Google Sheet draait. Let op:
-   - geen regel met `??` of `FOUTEN`;
-   - de kolomletters kloppen met het bouwplan (L, N, Q, R, S … AU);
-   - bij elke keuzelijst staan de juiste keuzes;
-   - orders en pallets komen via `Sheets API` (of `rechtstreeks`), niet uit het `importtabblad`;
-   - de aantallen liggen in de buurt van wat je verwacht (op 2 oktober 132 orders en 68 pallets).
-7. Kies Implementeren > Nieuwe implementatie > type Web-app. Uitvoeren als: Ik. Toegang: Iedereen. Kopieer het adres dat eindigt op `/exec`.
+De volgorde telt. Stap 2 moet voor stap 4.
 
-`installeer` mag je opnieuw uitvoeren: bestaande kolommen en de bestaande sleutel blijven. `nakijken` doet alleen de controle van punt 6 en schrijft niets. `meet` schrijft ook niets en toont hoe lang elke stap van het ophalen duurt; het logboek van `meet` bevat geen sleutel en geen namen. Na elke wijziging aan de code: Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft dan hetzelfde.
+1. Open de testkopie, Extensies > Apps Script. Vervang de inhoud van `Code.gs` door `apps-script/Code.gs` uit deze map. Bewaar.
+2. Kies bovenaan de functie `installeer` en klik op Uitvoeren. Google vraagt opnieuw toestemming, nu ook voor Drive (de foto's). Geef ze. Sla deze stap niet over, om twee redenen. Zonder die toestemming antwoordt het script waarschijnlijk op elke actie van de tablet met een toestemmingspagina, ook op de gewone controles, en dan blijft de wachtrij staan (niet getest tegen Google; het is de reden voor de volgorde). En `installeer` voegt de kolom "Foto opmerking" toe; zonder die kolom weigert het script elke controle met de melding dat de kolom ontbreekt.
+3. Kijk het uitvoeringslogboek na:
+   - `Toegevoegd vanaf kolom BI: Foto opmerking` (de kolom komt rechts van de bestaande kolommen van de app).
+   - `B  lijn  <- "Lijn"`. Staat er `??  lijn`, dan heet de kolom in rij 2 niet "Lijn" en komt de gekozen lijn niet in de sheet; al de rest werkt wel.
+   - `Lijnen waaruit de controleur kiest: L0, L1, …`.
+   - `Map voor de foto's: https://drive.google.com/…`. Open die map en deel ze met dezelfde mensen als de sheet. Anders krijgt een collega "toegang aanvragen" in plaats van de foto.
+   - `Dagcontrole werk (…): 0 metingen, 29 controlepunten` met de lijst eronder, en `Dagcontrole magazijn (…): 3 metingen, … controlepunten`. Vergelijk de lijsten met de twee tabbladen.
+   - Geen regel met `WAARSCHUWINGEN`, `??` of `FOUT`. Staat er "twee kolommen met dezelfde naam", geef dan in de sheet één van de twee een andere naam; zolang dat niet gebeurd is, werkt die dagcontrole niet (de productiecontroles wel).
+4. Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft hetzelfde.
+5. Zet de inhoud van `docs/` in de repository `lventureapps/qcrondgang` en push. Na een paar minuten staat de nieuwe versie online.
+6. Op de tablet: open de app, tik bovenaan op Bijwerken (of Instellingen > Op nieuwe versie controleren). Staat er "De app wordt bijgewerkt, maar een ander tabblad of venster … staat nog open", sluit dan het Chrome-tabblad van de app; het gaat daarna vanzelf verder.
+7. Instellingen toont nu "Scherm: … × … punten". Geef me die twee getallen door, liggend en staand. Beneden is getekend om zonder schuiven te passen vanaf 1280 × 720 liggend en 800 × 1180 staand.
+8. Bij de eerste foto vraagt Chrome toestemming voor de camera. Sta ze toe.
 
-## Stap 2: de app op GitHub Pages
+`installeer` mag je opnieuw uitvoeren: bestaande kolommen, de sleutel en de map blijven. `nakijken` schrijft niets en toont alleen het logboek van stap 3. `meet` schrijft niets en toont hoe lang elke stap duurt. `nieuweFotoMap` is alleen nodig als de map "QC foto's" definitief verwijderd is.
 
-1. Maak een nieuwe publieke repository `qc-rondgang` onder hetzelfde account als Palletscan.
-2. Zet de inhoud van deze map erin. Werk met git vanuit een gewone lokale map, niet vanuit Google Drive: Drive en de map `.git` gaan slecht samen.
-3. Settings > Pages > Deploy from a branch > `main`, map `/docs`.
-4. De app staat dan op `https://<account>.github.io/qc-rondgang/`.
-5. Palletscan staat op hetzelfde adres (`<account>.github.io`) en deelt dus de opslag van de browser. Nagekeken op 4 oktober 2026: zijn manifest is juist begrensd (`scope` is `./`), maar zijn service worker wist bij elke nieuwe versie alle caches behalve de zijne, dus ook die van deze app. Deze app herstelt zich daarvan zodra ze met verbinding geopend wordt (Instellingen toont of ze op de tablet bewaard is). Beter is het in Palletscan zelf op te lossen: in `sw.js` alleen caches wissen waarvan de naam met `palletscan-` begint.
+## Eerste installatie (al gebeurd voor fase 1)
 
-`apps-script/` en `test/` mogen mee in de repository; er staat niets vertrouwelijks in. Wil je alleen de app publiek, zet dan alleen `docs/` erin.
+1. Script: zoals stap 1 tot 4 hierboven. Voeg eerst de dienst Google Sheets API toe (links in de editor bij Diensten op +). Zonder die dienst werkt het script ook, maar veel trager: gemeten op 4 oktober 2026 duurt orders en pallets ophalen 2 seconden met de Sheets API en 64 seconden zonder. In het logboek van `installeer` staat de regel `SLEUTEL (ingeven op de tablet, niet delen): …`. Eerste implementatie: Implementeren > Nieuwe implementatie > type Web-app, Uitvoeren als: Ik, Toegang: Iedereen. Kopieer het adres dat eindigt op `/exec`.
+2. GitHub Pages: Settings > Pages > Deploy from a branch > `main`, map `/docs`. Werk met git vanuit een gewone lokale map, niet vanuit Google Drive.
+3. Tablet: open het adres in Chrome, plak het adres van het script en de sleutel, tik op Opslaan en testen. Daarna menu van Chrome > App installeren. Open de app altijd via het icoon.
 
-## Stap 3: de tablet
+`apps-script/` en `test/` mogen mee in de repository; er staat niets vertrouwelijks in.
 
-1. Open het adres in Chrome. Je ziet alleen het instelscherm.
-2. Plak het adres van het script en de sleutel, en tik op Opslaan en testen. De app meldt met welke sheet en welk tabblad ze verbonden is en haalt de gegevens op.
-3. Menu van Chrome > App installeren (of Toevoegen aan startscherm). Open de app daarna altijd via het icoon.
-4. Bij Instellingen staat of Chrome vaste opslag heeft toegekend. Bij een geïnstalleerde app is dat normaal ja.
+## Wat er veranderd is in de app
 
-## Stap 4: testen in de productiezone
+- **Boven en Beneden elk op één scherm.** Elk punt is één regel met de naam links en de knoppen rechts, in kolommen naast elkaar: drie op een liggende tablet, twee op een staande. Open punten zijn rood omrand. De uitleg uit de kop van de sheet staat klein onder de naam; een tik op de naam toont ze volledig. Lange keuzelijsten (operatoren, trechters) zijn een uitklaplijst met exact de keuzes van de sheet, die begint op "Kies…".
+- **Lijn.** Bovenaan Boven en Beneden staat de lijn van de productie, voorgevuld uit de productielijst. Is de lijn op het laatste moment gewijzigd, dan kiest de controleur de juiste uit de lijst (L0 tot L10, MUL, STICKS, GELPACK 1, GELPACK 2, VOLPAK). De keuze blijft staan bij verversen. Bij het verzenden komt de lijn als waarde in kolom B van die rij, in de plaats van de formule. Bij een pallet of een ingetypte code is er geen lijn voorgevuld; kiest de controleur er geen, dan blijft de formule van de sheet staan.
+- **Operatoren.** Eén punt "Operatoren" met een keuzescherm: tik iedereen aan die aan de lijn staat (één, twee, drie of meer). De knoppen zijn de keuzelijst van de kolom "Operator". Een naam die er niet in staat, typ je onderaan; ze staat er de volgende dagen als knop bij, tot ze 14 dagen niet meer gebruikt is. In de sheet komt de eerste naam in de eerste kolom "Operator" (Q) en de andere, met een komma ertussen, in de tweede (R). Met één of twee operatoren ziet een rij er dus uit zoals vandaag.
+- **Mono/Duo en Snelheid** staan in één blok, altijd direct onder elkaar.
+- **Foto's.** Camera in de pagina, foto verkleind tot 1600 punten langste zijde. De foto's van ZK en etiket zijn nodig om Beneden af te sluiten; die van het etiket mag op NVT. "Foto opmerking" is niet verplicht, bijvoorbeeld bij een NOK. In de sheet staat "volgt" tot de foto binnen is, daarna een link "Foto ZK", "Foto etiket" of "Foto opmerking" (nieuwe kolom, rechts). Een tik op de kleine foto toont ze groot.
+- **Dagcontroles.** Twee tegels op het startscherm. Werkmaterialen: per punt OK of een opmerking. Magazijn: drie metingen, daarna per punt OK of NOK met opmerking. Een dagcontrole hoort bij de dag waarop ze begonnen is. Is ze niet afgesloten, dan staat ze de volgende dag op het startscherm onder "Dagcontroles van eerdere dagen".
 
-Deze punten uit hoofdstuk 11 van het bouwplan zijn op de echte tablet en tegen de echte testkopie na te lopen:
+## Testen op de tablet en in de sheet
 
-1. Vliegtuigmodus aan, Boven invullen voor drie lijnen, app sluiten en heropenen, dan Beneden: de invoer van Boven staat bij elke lijn bovenaan. Vliegtuigmodus uit: alles komt één keer in de sheet.
-2. Boven verzenden met verbinding, Beneden later: zelfde rij, niets van Boven gewist.
-3. Een deel afsluiten met een open punt: de app weigert en toont welk punt.
-4. Tablet herstarten met een volle wachtrij: de wachtrij is er nog.
-5. Code intypen die niet in de lijst zit: de rij komt in de sheet en de formules vullen product en lot aan.
-6. Checkweger NEE: T, U en V tonen NVT en bevatten nog de formule. Checkweger JA: de antwoorden staan erin. Corrigeren naar NEE: de formule staat er weer. Zelfde voor Metaaldetector en X.
-7. Per controlepunt de knoppen vergelijken met de keuzelijst van de kolom.
-8. Maandoverzicht en tellers tonen dezelfde cijfers als bij handmatige invoer.
-9. Een opmerking die begint met `=` of die op een datum lijkt (`3-4`): ze staat als gewone tekst in de sheet, zonder zichtbare apostrof.
-10. Een verzonden deel corrigeren (knop Corrigeren, alleen op de dag zelf): de wijziging komt in dezelfde rij.
+Van fase 1 (nog altijd geldig):
+
+1. Vliegtuigmodus aan, Boven invullen voor drie lijnen, app sluiten en heropenen, dan Beneden: de invoer van Boven staat links bovenaan. Vliegtuigmodus uit: alles komt één keer in de sheet.
+2. Een deel afsluiten met een open punt: de app weigert en omrandt het punt rood.
+3. Checkweger NEE: T, U en V tonen NVT en bevatten nog de formule. Corrigeren van JA naar NEE: de formule staat er weer. Zelfde voor Metaaldetector en X.
+4. Een opmerking die begint met `=` of die op een datum lijkt (`3-4`): ze staat als gewone tekst in de sheet.
+5. Per controlepunt de keuzes vergelijken met de keuzelijst van de kolom.
+
+Nieuw:
+
+6. Past Beneden op het scherm zonder schuiven, liggend en staand? Zijn de knoppen groot genoeg voor wie de controle doet?
+7. Foto nemen van een echte gewichtsfiche. Tik op de kleine foto: is alles leesbaar? Zo niet, dan moet de foto groter bewaard worden.
+7b. Operatoren: een controle met drie operatoren waarvan één niet in de lijst. In Q staat de eerste naam, in R de andere twee met een komma. Die twee cellen tonen een waarschuwing van de gegevensvalidatie (rood hoekje); dat is de bedoeling. Weigert de sheet de waarde toch, dan zie je in de app "Fout: …": geef me die melding door.
+7a. Lijn: een controle doen waar de lijn klopt en één waar je ze wijzigt. In kolom B staat telkens de lijn als gewone waarde. Kijk of het maandoverzicht en de tellers die rijen nog bij de juiste lijn tellen.
+7c. Foto opmerking nemen bij een NOK: de link staat in de nieuwe kolom. Een verzonden foto opnieuw nemen (Corrigeren): de cel wijst naar de nieuwe, de oude staat in de prullenbak van Drive.
+8. Vliegtuigmodus aan, drie controles met foto's, app sluiten, vliegtuigmodus uit: elke rij heeft één link in AK (en AL), in de map staat per foto één bestand.
+9. Foto openen vanuit de sheet op een pc, met het account van een collega: hoogstens twee klikken, geen vraag om toegang.
+10. Foto nemen tot Android het tabblad herlaadt (bijvoorbeeld via "Camera-app of bestand"): controle en foto zijn er nog.
+11. Werkmaterialen boven: de rij van vandaag krijgt OK of de opmerking, en "Ja" in "Controle afgewerkt?". Weigert de sheet "Ja" of een vrije tekst (validatie op de cel), dan zie je bovenaan in de app "Fout: …"; geef me die melding door.
+12. Magazijn en bufferzone: metingen in B, C en D, per punt het juiste vakje, de opmerking bij NOK, "NVT" bij OK. Corrigeer daarna een NOK naar OK: in "Opmerking NOK" moet weer NVT staan en geen tekst die met `=IF(` begint.
+13. Een dagcontrole beginnen en niet afsluiten; de dag erna staat ze op het startscherm en kan ze afgewerkt of verwijderd worden.
+14. Maandoverzicht en tellers tonen dezelfde cijfers als bij handmatige invoer.
 
 ## Wat getest is en wat niet
 
-Getest, hier in de bouwomgeving: 31 tests van `Code.gs` tegen een nagebootste sheet met de echte koppen, en 17 scenario's van de app in Chromium (vliegtuigmodus, heropenen, verloren bevestiging, dubbel verzoek, automatische NVT, verversen, corrigeren, verwijderen, gewiste cache, Background Sync). Ze slagen allemaal.
+Getest, hier in de bouwomgeving: 68 tests van `Code.gs` tegen een nagebootste sheet met de echte koppen, en 34 scenario's van de app in Chromium, met en zonder de nagebootste Sheets API. Ze slagen, drie volledige beurten na elkaar. De scenario's die eerder af en toe mislukten, deden dat door een fout in de test zelf (de test keek naar "Alles verzonden" voor het scherm opnieuw getekend was); dat is verbeterd.
 
-Niet getest: het script is nooit tegen Google zelf uitgevoerd, en de app nooit op de tablet. De nagebootste sheet bewijst de logica, niet het gedrag van Google. Vier dingen zijn daarom pas zeker na stap 1 en stap 4:
+Niet getest: fase 2 en 3 hebben nooit tegen Google zelf gedraaid en nooit op de tablet. De nagebootste sheet bewijst de logica, niet het gedrag van Google. Pas zeker na de stappen hierboven:
 
-- of Google de NVT-formule met puntkomma's aanvaardt bij het terugzetten (test 6);
-- of een opmerking die met `=`, `+` of `-` begint als tekst in de cel komt (test 9);
-- of het script de twee bronsheets rechtstreeks kan openen met jouw account;
-- hoe lang een snapshot en een schrijfactie duren met versie 1.2.0 van het script (voer `meet` uit). Met versie 1.1.0 duurde een snapshot 11 seconden, waarvan 6 voor het zoeken van de eerste vrije rij; versie 1.2.0 doet ook dat via de Sheets API. De app wacht 150 seconden op gegevens; intussen blijft ze bruikbaar met de vorige.
+- alles van Drive: de map naast de sheet, het bestand, de link in AK, AL en de nieuwe kolom, en het verplaatsen van een vervangen foto naar de prullenbak;
+- of een cel met een keuzelijst een naam buiten de lijst aanvaardt nadat het script de validatie van die ene cel op "waarschuwing tonen" zet (test 7b);
+- of Drive een net bewaard bestand bij een herhaling binnen enkele seconden al terugvindt. Zo niet, dan kan er na een verloren bevestiging een tweede bestand in de map komen. De link in de sheet blijft juist.
+- de dagtabbladen op de echte sheet (test 11 en 12);
+- de camera in de geïnstalleerde app en de leesbaarheid van de foto (test 7);
+- of Beneden op het echte scherm past (test 6).
 
-De koppen van de testkopie en van de twee bronsheets zijn op 2 oktober 2026 wel uitgelezen; het script zoekt op die koppen.
+De eerste rij die de app in fase 1 in de testkopie schreef (rij 1759) is nagekeken en klopt.
+
+## Keuzes die je moet kennen
+
+- Wordt een foto opnieuw genomen nadat ze verzonden is, dan krijgt de nieuwe een eigen bestand, wijst de cel naar de nieuwe en gaat de oude naar de prullenbak van Drive (daar blijft ze 30 dagen terug te halen). Hetzelfde gebeurt als een foto in de app gewist wordt of het etiket alsnog op NVT gaat. Het script verplaatst alleen een bestand dat het zelf voor die controle en die soort foto bewaard heeft, nooit een ander. Een oudere foto die te laat aankomt, vervangt nooit een nieuwere.
+- Lijn: voor elke controle van een order schrijft de app de lijn als waarde in kolom B; de formule van de sheet verdwijnt in die rij. Zo blijft staan op welke lijn er echt gecontroleerd is, ook als de productielijst later wijzigt. Heeft kolom B een keuzelijst die de waarde niet kent, dan zet het script de validatie van die ene cel op "waarschuwing tonen". De lijst van lijnen staat bovenaan in `Code.gs` (`LIJNEN`); je kunt ze ook zonder code aanpassen met een Script Property `LIJNEN` (namen met een komma ertussen), gevolgd door Verversen op de tablet.
+- Operatoren: de eerste naam in Q, de andere in R met een komma. Staat een naam niet in de keuzelijst, of staan er twee namen in R, dan zet het script de validatie van die ene cel op "waarschuwing tonen" in plaats van "weigeren". De keuzelijst zelf en de andere rijen wijzigen niet. Tellingen of filters per operator op kolom R zien "CD, EF" als één waarde.
+- De uitdrukkelijke keuze "Geen tweede operator" is weg: wie één operator aantikt, laat R leeg.
+- Een foto wordt pas verzonden nadat Beneden van die controle in de sheet staat. Verdwijnt de rij daarna uit de sheet (rij verwijderd, app-ID gewist), dan blijft de foto wachten en zegt de app waarom.
+- Een dagcontrole van een eerdere dag afsluiten overschrijft wat er voor die dag al in de sheet staat. Bij Magazijn komt een dag die nog geen rij had onderaan, dus mogelijk onder de rij van vandaag.
+- Corrigeren in de app kan op de dag zelf. Een dagcontrole die nog niet verzonden is, kan ook later nog gecorrigeerd worden.
+- De dagcontroles blijven in groepen van hoogstens zes punten per scherm.
 
 ## Zelf de tests draaien (niet nodig om de app te gebruiken)
 
@@ -94,4 +119,4 @@ npm test
 
 ## Een nieuwe versie van de app uitbrengen
 
-Verhoog het nummer in `docs/js/versie.js` bij elke wijziging aan de app. De tablet haalt de nieuwe bestanden op en toont bovenaan "Er is een nieuwe versie" met een knop Bijwerken. De app schakelt nooit vanzelf over midden in een controle.
+Verhoog het nummer in `docs/js/versie.js` bij elke wijziging aan de app. De tablet haalt de nieuwe bestanden op en toont bovenaan "Er is een nieuwe versie" met een knop Bijwerken. De app schakelt nooit vanzelf over midden in een controle. Ze zoekt zelf naar een nieuwe versie bij het openen en daarna hoogstens één keer per uur. Na een push duurt het een paar minuten voor GitHub Pages de nieuwe bestanden serveert. Na elke wijziging aan het script: Implementeren > Implementaties beheren > bewerken > Nieuwe versie.

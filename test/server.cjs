@@ -15,9 +15,12 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
   const staat = {
     fx: null, script: null, sleutel: null,
-    verlies: 0,        // zoveel antwoorden op "controle" gaan verloren NA het schrijven
+    verlies: 0,        // zoveel antwoorden op verliesActie gaan verloren NA het schrijven
+    verliesActie: 'controle',
+    weiger: [],        // acties die het script tijdelijk weigert (antwoord: fout)
     html: 0,           // zoveel antwoorden zijn een HTML-foutpagina
     preflights: 0,     // OPTIONS-verzoeken (moet 0 blijven)
+    nieuweVersie: '',  // nabootsen dat er een nieuwe versie van de app online staat
     verzoeken: [],     // alle ontvangen acties
     reset(opties) {
       this.fx = maakFixture(opties);
@@ -25,7 +28,7 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
       this.script = laadScript({ actief: this.fx.qc, opId: this.fx.opId, sheetsDienst: process.env.QC_SHEETS === '1' });
       this.script.roep('installeer');
       this.sleutel = this.script.props.SLEUTEL;
-      this.verlies = 0; this.html = 0; this.preflights = 0; this.verzoeken = [];
+      this.verlies = 0; this.verliesActie = 'controle'; this.weiger = []; this.html = 0; this.preflights = 0; this.verzoeken = []; this.nieuweVersie = '';
     }
   };
   staat.reset();
@@ -37,7 +40,11 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
     const bestand = path.join(APP_MAP, path.normalize(rel));
     if (!bestand.startsWith(APP_MAP) || !fs.existsSync(bestand) || fs.statSync(bestand).isDirectory()) { res.writeHead(404); res.end('niet gevonden'); return; }
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(bestand)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
-    res.end(fs.readFileSync(bestand));
+    let inhoud = fs.readFileSync(bestand);
+    // Nabootsen dat er een nieuwe versie van de app online staat.
+    if (staat.nieuweVersie && rel === 'js/versie.js') inhoud = Buffer.from(inhoud.toString('utf8').replace(/APP_VERSIE = '[^']+'/, "APP_VERSIE = '" + staat.nieuweVersie + "'"));
+    if (staat.nieuweVersie && rel === 'sw.js') inhoud = Buffer.concat([inhoud, Buffer.from('\n// build ' + staat.nieuweVersie + '\n')]);
+    res.end(inhoud);
   });
 
   const echo = new Map();
@@ -66,8 +73,10 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
           res.end('<html><body>Er is een fout opgetreden</body></html>');
           return;
         }
-        const uit = JSON.stringify(staat.script.post(body));
-        if (actie === 'controle' && staat.verlies > 0) {
+        const uit = staat.weiger.includes(actie)
+          ? JSON.stringify({ ok: false, code: 'FOUT', fout: 'Tijdelijk geweigerd door de test.' })
+          : JSON.stringify(staat.script.post(body));
+        if (actie === staat.verliesActie && staat.verlies > 0) {
           staat.verlies--;
           // Geschreven in de sheet, maar de bevestiging komt nooit volledig aan:
           // de verbinding valt weg midden in het antwoord.

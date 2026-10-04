@@ -7,7 +7,11 @@ const vm = require('vm');
 
 const CRIT = { CHECKBOX: 'CHECKBOX', VALUE_IN_LIST: 'VALUE_IN_LIST', VALUE_IN_RANGE: 'VALUE_IN_RANGE' };
 
-const regel = (type, args) => ({ getCriteriaType: () => type, getCriteriaValues: () => args });
+// vrij = "ongeldige gegevens: waarschuwing tonen" in plaats van "invoer weigeren"
+const regel = (type, args, vrij = false) => ({
+  getCriteriaType: () => type, getCriteriaValues: () => args, getAllowInvalid: () => vrij,
+  copy: () => { let v = vrij; const bouwer = { setAllowInvalid(x) { v = !!x; return bouwer; }, build: () => regel(type, args, v) }; return bouwer; }
+});
 const lijstRegel = (waarden) => regel(CRIT.VALUE_IN_LIST, [waarden.slice(), true]);
 const vakjeRegel = () => regel(CRIT.CHECKBOX, []);
 
@@ -15,6 +19,21 @@ function letterNaarKolom(l) {
   let n = 0;
   for (const ch of l.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
   return n;
+}
+
+/** A1-notatie: 'A4:B', 'A3:A', '2:3', 'A4:B10'. Open einde = tot laatsteRij/laatsteKolom. */
+function leesA1(tekst, laatsteRij, laatsteKolom) {
+  let m = /^(\d+):(\d+)$/.exec(tekst);
+  if (m) return { r1: Number(m[1]), r2: Number(m[2]), c1: 1, c2: laatsteKolom };
+  m = /^([A-Z]+)(\d+):([A-Z]+)(\d*)$/.exec(tekst);
+  if (m) return { r1: Number(m[2]), r2: m[4] ? Number(m[4]) : laatsteRij, c1: letterNaarKolom(m[1]), c2: letterNaarKolom(m[3]) };
+  throw new Error('Nep: bereik niet nagebootst: ' + tekst);
+}
+
+/** Dagnummer zoals de Sheets API het geeft (dagen sinds 30-12-1899, met het uur als breuk). */
+function dagnummer(d) {
+  const dagen = Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1899, 11, 30)) / 86400000);
+  return dagen + (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400;
 }
 
 class NepTab {
@@ -44,6 +63,10 @@ class NepTab {
     return m;
   }
   getRange(r, c, nr = 1, nc = 1) {
+    if (typeof r === 'string') {
+      const b = leesA1(r, this.maxRijen, this.maxKolommen);
+      return new NepBereik(this, b.r1, b.c1, b.r2 - b.r1 + 1, b.c2 - b.c1 + 1);
+    }
     if (r < 1 || c < 1 || r + nr - 1 > this.maxRijen || c + nc - 1 > this.maxKolommen) {
       throw new Error(`Bereik buiten het blad: rij ${r}, kolom ${c}, ${nr}x${nc} (blad is ${this.maxRijen}x${this.maxKolommen})`);
     }
@@ -68,6 +91,8 @@ class NepTab {
         const bron = this.waarde(Number(m[2]), letterNaarKolom(m[1]));
         return String(bron).toLowerCase() === 'nee' ? 'NVT' : '';
       }
+      const vakje = /^=IF\(([A-Z]+)(\d+);"NVT";\)$/i.exec(x.f);
+      if (vakje) return this.waarde(Number(vakje[2]), letterNaarKolom(vakje[1])) === true ? 'NVT' : '';
       return x.v; // andere formules: de vooraf ingevulde "uitkomst"
     }
     return x.v;
@@ -104,23 +129,29 @@ class NepBereik {
   getDisplayValue() { return this.getDisplayValues()[0][0]; }
   getFormula() { return this.getFormulas()[0][0]; }
   setNumberFormat(fmt) { this._map((r, c) => { this.tab.cel(r, c, true).fmt = fmt; }); return this; }
-  setFormula(f) { this._map((r, c) => { const x = this.tab.cel(r, c, true); x.f = f; x.v = ''; }); return this; }
-  clearContent() { this._map((r, c) => { const x = this.tab.cel(r, c); if (x) { x.v = ''; x.f = ''; } }); return this; }
+  // Voorzichtige aanname over Google: in een cel met tekstopmaak ("@") blijft een formule gewone tekst.
+  setFormula(f) { this._map((r, c) => { const x = this.tab.cel(r, c, true); x.link = ''; if (x.fmt === '@') { x.f = ''; x.v = f; } else { x.f = f; x.v = ''; } }); return this; }
+  setRichTextValue(rt) { this._map((r, c) => { const x = this.tab.cel(r, c, true); x.f = ''; x.v = rt.getText(); x.link = rt.getLinkUrl() || ''; }); return this; }
+  getRichTextValue() { const x = this.tab.cel(this.r, this.c) || {}; return { getText: () => String(x.v || ''), getLinkUrl: () => x.link || null }; }
+  clearContent() { this._map((r, c) => { const x = this.tab.cel(r, c); if (x) { x.v = ''; x.f = ''; x.link = ''; } }); return this; }
+  getDataValidation() { return (this.tab.cel(this.r, this.c) || {}).dv || null; }
+  setDataValidation(dv) { this._map((r, c) => { this.tab.cel(r, c, true).dv = dv; }); return this; }
   clearDataValidations() { this._map((r, c) => { const x = this.tab.cel(r, c); if (x) x.dv = null; }); return this; }
   setValue(v) { this._map((r, c) => this._zet(r, c, v)); return this; }
   setValues(m) { this._map((r, c) => this._zet(r, c, m[r - this.r][c - this.c])); return this; }
   _zet(r, c, v) {
     const x = this.tab.cel(r, c, true);
     // Gegevensvalidatie: een keuzelijst weigert een waarde die er niet in staat.
-    if (x.dv && x.dv.getCriteriaType() === CRIT.VALUE_IN_LIST && v !== '' && v !== null) {
+    if (x.dv && x.dv.getCriteriaType() === CRIT.VALUE_IN_LIST && !x.dv.getAllowInvalid() && v !== '' && v !== null) {
       const toegelaten = x.dv.getCriteriaValues()[0].map(String);
       if (!toegelaten.includes(String(v))) throw new Error(`De gegevens die je hebt ingevoerd in cel schenden de gegevensvalidatie (${v})`);
     }
     x.f = '';
+    x.link = '';
     if (typeof v === 'string') {
       // Zoals getypt: apostrof = tekst, = is formule, een getal wordt een getal.
       if (v.startsWith("'")) x.v = v.slice(1);
-      else if (v.startsWith('=')) { x.f = v; x.v = ''; }
+      else if (v.startsWith('=') && x.fmt !== '@') { x.f = v; x.v = ''; }
       else if (x.fmt !== '@' && v.trim() !== '' && !isNaN(Number(v))) x.v = Number(v);
       else x.v = v;
     } else {
@@ -134,7 +165,7 @@ class NepBereik {
       const dc = doel.c + (c - this.c);
       if (!bron) { doel.tab.cellen.delete(dr + ',' + dc); return; }
       const f = bron.f ? bron.f.replace(/([A-Z]+)(\d+)/g, (m, l, n) => (Number(n) === r ? l + dr : m)) : '';
-      doel.tab.cellen.set(dr + ',' + dc, { v: bron.v, f, dv: bron.dv, fmt: bron.fmt });
+      doel.tab.cellen.set(dr + ',' + dc, { v: bron.v, f, dv: bron.dv, fmt: bron.fmt, link: bron.link || '' });
     });
   }
 }
@@ -158,31 +189,32 @@ function nepSheetsDienst(opId, teller, magLezen) {
     const m = /^'((?:[^']|'')+)'!(.+)$/.exec(bereik);
     const tab = ss.getSheetByName(m[1].replace(/''/g, "'"));
     if (!tab) throw new Error('Unable to parse range: ' + bereik);
-    const laatsteRij = tab.getLastRow();
-    const laatsteKolom = tab.getLastColumn();
-    let waarden;
-    let r = /^(\d+):(\d+)$/.exec(m[2]);
-    if (r) {
-      waarden = [];
-      for (let rij = Number(r[1]); rij <= Math.min(Number(r[2]), laatsteRij); rij++) {
+    const b = leesA1(m[2], tab.getLastRow(), tab.getLastColumn());
+    let cel;
+    if (opties.valueRenderOption === 'FORMATTED_VALUE') cel = (r, c) => tab.toon(r, c);
+    else if (opties.valueRenderOption === 'UNFORMATTED_VALUE') {
+      cel = (r, c) => { const v = tab.waarde(r, c); return Object.prototype.toString.call(v) === '[object Date]' ? dagnummer(v) : v; };
+    } else throw new Error('Nep: valueRenderOption niet nagebootst');
+    const leeg = (x) => x === '' || x === null || x === undefined;
+    let waarden = [];
+    if (opties.majorDimension === 'COLUMNS') {
+      for (let c = b.c1; c <= b.c2; c++) {
+        const kolom = [];
+        for (let r = b.r1; r <= b.r2; r++) kolom.push(r === teller.apiVerberg ? '' : cel(r, c));
+        while (kolom.length && leeg(kolom[kolom.length - 1])) kolom.pop();
+        waarden.push(kolom);
+      }
+    } else {
+      for (let r = b.r1; r <= b.r2; r++) {
         const regel = [];
-        for (let c = 1; c <= laatsteKolom; c++) regel.push(tab.toon(rij, c));
-        while (regel.length && regel[regel.length - 1] === '') regel.pop();
+        for (let c = b.c1; c <= b.c2; c++) regel.push(r === teller.apiVerberg ? '' : cel(r, c));
+        while (regel.length && leeg(regel[regel.length - 1])) regel.pop();
         waarden.push(regel);
       }
-      while (waarden.length && !waarden[waarden.length - 1].length) waarden.pop();
-    } else {
-      r = /^([A-Z]+)(\d+):([A-Z]+)$/.exec(m[2]);
-      if (!r || r[1] !== r[3]) throw new Error('Nep: bereik niet nagebootst: ' + bereik);
-      const kolom = [];
-      for (let rij = Number(r[2]); rij <= laatsteRij; rij++) kolom.push(rij === teller.apiVerberg ? '' : tab.toon(rij, letterNaarKolom(r[1])));
-      while (kolom.length && kolom[kolom.length - 1] === '') kolom.pop();
-      if (opties.majorDimension !== 'COLUMNS') throw new Error('Nep: alleen COLUMNS nagebootst voor kolombereiken');
-      waarden = kolom.length ? [kolom] : undefined;
     }
-    if (opties.valueRenderOption !== 'FORMATTED_VALUE') throw new Error('Nep: alleen FORMATTED_VALUE nagebootst');
+    while (waarden.length && !waarden[waarden.length - 1].length) waarden.pop();
     const uit = { range: bereik };
-    if (waarden && waarden.length) uit.values = waarden;
+    if (waarden.length) uit.values = waarden;
     return uit;
   }
   return { Spreadsheets: { Values: {
@@ -191,7 +223,50 @@ function nepSheetsDienst(opId, teller, magLezen) {
   } } };
 }
 
+/** Nagebootste Drive: mappen en bestanden in het geheugen. */
+class NepMap {
+  constructor(drive, naam, ouder) { this.drive = drive; this.naam = naam; this.ouder = ouder; this.id = 'map-' + (++drive.teller); this.mappen = []; this.bestanden = []; drive.perId[this.id] = this; }
+  getId() { return this.id; }
+  getName() { return this.naam; }
+  getUrl() { return 'https://drive.google.com/drive/folders/' + this.id; }
+  isTrashed() { return !!this.prullenbak; }
+  createFolder(naam) { const m = new NepMap(this.drive, naam, this); this.mappen.push(m); return m; }
+  getFoldersByName(naam) { return iterator(this.mappen.filter((m) => m.naam === naam)); }
+  getFilesByName(naam) { return iterator(this.bestanden.filter((b) => b.naam === naam)); }
+  createFile(blob) {
+    if (this.drive.bijMaken) this.drive.bijMaken(blob); // voor tests: iets laten gebeuren tijdens het bewaren
+    const id = 'bestand-' + (++this.drive.teller);
+    const b = { id, naam: blob.naam, type: blob.type, bytes: blob.bytes, beschrijving: '', getId: () => id, getUrl: () => 'https://drive.google.com/file/d/' + id + '/view?usp=drivesdk', getName: () => blob.naam,
+      isTrashed() { return !!this.prullenbak; }, setTrashed(x) { this.prullenbak = !!x; return this; }, getDescription() { return this.beschrijving; }, setDescription(t) { this.beschrijving = t; return this; } };
+    this.bestanden.push(b);
+    this.drive.bestandPerId[id] = b;
+    return b;
+  }
+}
+const iterator = (lijst) => { let i = 0; return { hasNext: () => i < lijst.length, next: () => lijst[i++] }; };
+function nepDrive(sheetId) {
+  const drive = { teller: 0, perId: {}, bestandPerId: {} };
+  drive.wortel = new NepMap(drive, 'Mijn Drive', null);
+  drive.sheetMap = drive.wortel.createFolder('Kwaliteit');
+  drive.app = {
+    getFolderById: (id) => {
+      if (drive.storing) throw new Error('Service error: Drive');
+      if (!drive.perId[id]) throw new Error('Map niet gevonden');
+      return drive.perId[id];
+    },
+    getFileById: (id) => {
+      if (drive.bestandPerId[id]) return drive.bestandPerId[id];
+      if (id !== sheetId) throw new Error('Bestand niet gevonden');
+      return { getParents: () => iterator([drive.sheetMap]) };
+    },
+    createFolder: (naam) => drive.wortel.createFolder(naam)
+  };
+  drive.alleBestanden = () => { const uit = []; const loop = (m) => { m.bestanden.forEach((b) => uit.push({ map: m.naam, naam: b.naam, bytes: b.bytes.length, beschrijving: b.beschrijving, url: b.getUrl(), prullenbak: !!b.prullenbak })); m.mappen.forEach(loop); }; loop(drive.wortel); return uit; };
+  return drive;
+}
+
 function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) {
+  const drive = nepDrive(actief.getId());
   const props = { ...eigenschappen };
   const teller = { openById: 0, api: 0, apiToegang: true, apiVerberg: 0 };
   const logboek = [];
@@ -207,9 +282,15 @@ function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) 
         return opId[id];
       },
       flush: () => {},
-      DataValidationCriteria: CRIT
+      DataValidationCriteria: CRIT,
+      newRichTextValue: () => {
+        const rt = { tekst: '', link: null };
+        const bouwer = { setText(t) { rt.tekst = t; return bouwer; }, setLinkUrl(u) { rt.link = u; return bouwer; }, build: () => ({ getText: () => rt.tekst, getLinkUrl: () => rt.link }) };
+        return bouwer;
+      }
     },
-    PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = v; } }) },
+    DriveApp: drive.app,
+    PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = v; }, deleteProperty: (k) => { delete props[k]; } }) },
     LockService: { getScriptLock: () => ({
       waitLock: () => { if (slot.bezet) throw new Error('Lock timeout'); slot.bezet = true; },
       releaseLock: () => { slot.bezet = false; }
@@ -223,7 +304,14 @@ function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) 
       parseDate: (s) => {
         const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(s);
         return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
-      }
+      },
+      formatDate: (d, tz, patroon) => {
+        if (patroon !== 'yyyy-MM-dd') throw new Error('Nep: patroon niet nagebootst');
+        const p = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+      },
+      base64Decode: (tekst) => Array.from(Buffer.from(tekst, 'base64')),
+      newBlob: (bytes, type, naam) => ({ bytes, type, naam })
     },
     Logger: { log: (x) => logboek.push(String(x)) }
   };
@@ -235,7 +323,7 @@ function laadScript({ actief, opId, eigenschappen = {}, sheetsDienst = false }) 
   return {
     post: (obj) => JSON.parse(sandbox.doPost({ postData: { contents: typeof obj === 'string' ? obj : JSON.stringify(obj) } }).tekst),
     roep: (naam, ...args) => vm.runInContext(naam, sandbox)(...args),
-    props, logboek, slot, teller
+    props, logboek, slot, teller, drive
   };
 }
 

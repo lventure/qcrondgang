@@ -3,9 +3,27 @@
 // de sheet de enige plek blijft waar lijsten onderhouden worden.
 
 export const DELEN = ['boven', 'beneden'];
+
+// De lijnen waaruit de controleur kiest. De lijst komt uit de snapshot (het
+// script); deze kopie dient alleen zolang het script ze nog niet meestuurt.
+export const LIJNEN = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'MUL', 'STICKS', 'GELPACK 1', 'GELPACK 2', 'VOLPAK'];
+
+/**
+ * De keuzes voor de lijn van een controle: de vaste lijst, aangevuld met lijnen
+ * die in de productielijst voorkomen en er niet in staan, en met de lijn die nu
+ * bij de controle staat. Wat de app toont, kan dus altijd gekozen blijven.
+ */
+export function lijnKeuzes(snapshot, huidige) {
+  const uit = (snapshot && Array.isArray(snapshot.lijnen) && snapshot.lijnen.length ? snapshot.lijnen : LIJNEN).map(String);
+  const erbij = (x) => { x = String(x == null ? '' : x).trim(); if (x && !uit.includes(x)) uit.push(x); };
+  ((snapshot && snapshot.orders) || []).forEach((o) => erbij(o.lijn));
+  erbij(huidige);
+  return uit;
+}
 export const DEELNAAM = { boven: 'Boven', beneden: 'Beneden' };
 
-// soort: 'vakje' (Ja/Nee), 'keuze' (keuzelijst van de sheet), 'getal', 'tekst'
+// soort: 'vakje' (Ja/Nee), 'keuze' (keuzelijst van de sheet), 'getal', 'tekst',
+//        'meer' (meerdere namen uit een keuzelijst van de sheet, of een eigen naam)
 // nvtAls: vervalt automatisch als dat veld op NEE staat
 // leegKeuze: uitdrukkelijke keuze die de cel leeg laat
 // reserve: keuzes als de kolom in de sheet geen keuzelijst heeft
@@ -18,8 +36,9 @@ export const VELDEN = {
 
   lotZkCorrect: { deel: 'beneden', soort: 'vakje', label: 'LOT ZK correct?' },
   allergenenCorrect: { deel: 'beneden', soort: 'vakje', label: 'Allergenen correct?' },
-  operator1: { deel: 'beneden', soort: 'keuze', label: 'Operator', achtervoegsel: ' (1)' },
-  operator2: { deel: 'beneden', soort: 'keuze', label: 'Operator', achtervoegsel: ' (2)', leegKeuze: 'Geen tweede operator' },
+  // Eén punt voor alle operatoren aan de lijn (één, twee, soms drie). In de sheet:
+  // de eerste naam in de eerste kolom "Operator", de andere met een komma ertussen in de tweede.
+  operatoren: { deel: 'beneden', soort: 'meer', label: 'Operatoren', keuzesVan: 'operator1' },
   checkweger: { deel: 'beneden', soort: 'keuze', label: 'Checkweger?' },
   cwGewicht: { deel: 'beneden', soort: 'keuze', label: 'Gewicht checkweger = weegschaal?', nvtAls: 'checkweger' },
   cwPlus: { deel: 'beneden', soort: 'keuze', label: 'Controle +1 OK?', nvtAls: 'checkweger' },
@@ -47,13 +66,25 @@ export const GROEPEN = {
     { titel: 'Grondstof en afvulling', toon: ['grondstof', 'lotGrd', 'allergenen'], velden: ['grdCorrect', 'allergeenEtiket', 'trechter', 'ordeNetheid', 'opmBoven'] }
   ],
   beneden: [
-    { titel: 'Lot, allergenen en operator', toon: ['product', 'lotZk', 'allergenen'], velden: ['lotZkCorrect', 'allergenenCorrect', 'operator1', 'operator2'] },
+    { titel: 'Lot, allergenen en operatoren', toon: ['product', 'lotZk', 'allergenen'], velden: ['lotZkCorrect', 'allergenenCorrect', 'operatoren'] },
     { titel: 'Checkweger', toon: [], velden: ['checkweger', 'cwGewicht', 'cwPlus', 'cwMin'] },
-    { titel: 'Metaaldetector en lijn', toon: [], velden: ['metaaldetector', 'mdUitworp', 'monoDuo', 'snelheid'] },
+    { titel: 'Metaaldetector', toon: [], velden: ['metaaldetector', 'mdUitworp'] },
+    // samen: deze punten horen bij elkaar en staan altijd onder elkaar in dezelfde kolom.
+    { titel: 'Mono of duo en snelheid', toon: [], velden: ['monoDuo', 'snelheid'], samen: true },
     { titel: 'Product, houdbaarheid, gewicht, ZK en DI', toon: ['product', 'lotZk'], velden: ['cProduct', 'cHoudbaarheid', 'cGewicht', 'cZk', 'cDi'] },
-    { titel: 'DS/pallet, etiket, documenten en allergenenbeleid', toon: [], velden: ['cDs', 'cEtiket', 'cDocumenten', 'cAllergenen', 'opmBeneden'] }
+    { titel: 'DS/pallet, etiket, documenten en allergenenbeleid', toon: [], velden: ['cDs', 'cEtiket', 'cDocumenten', 'cAllergenen', 'opmBeneden'] },
+    { titel: "Foto's", toon: [], velden: [], fotos: true }
   ]
 };
+
+// Foto's bij Beneden. De foto van het etiket mag uitdrukkelijk "niet van toepassing" zijn.
+// De foto bij een opmerking is nooit verplicht.
+export const FOTOS = {
+  zk: { punt: 'fotoZk', label: 'Foto ZK & gewichtsfiche', kort: 'Foto ZK' },
+  etiket: { punt: 'fotoEtiket', label: 'Foto etiket (indien achteraan)', kort: 'Foto etiket', magNvt: true },
+  opmerking: { punt: 'fotoOpmerking', label: 'Foto opmerking', kort: 'Foto opmerking', hulp: 'Niet verplicht. Bijvoorbeeld bij een NOK.', optioneel: true }
+};
+export const FOTOSOORTEN = ['zk', 'etiket', 'opmerking'];
 
 export const OPMERKING = { boven: 'opmBoven', beneden: 'opmBeneden' };
 export const OPZOEKNAAM = { product: 'Product', lotZk: 'LOT ZK', grondstof: 'Grondstof', lotGrd: 'LOT GRD', allergenen: 'Allergenen' };
@@ -90,6 +121,22 @@ export function keuzes(id, snapshot) {
   return uit;
 }
 
+/** De namen in de keuzelijst "Operator" van de sheet. */
+export function operatorKeuzes(snapshot) {
+  const v = snapshot && snapshot.velden && snapshot.velden[VELDEN.operatoren.keuzesVan];
+  return v && v.keuzes ? v.keuzes.map(String) : [];
+}
+
+/**
+ * De gekozen operatoren, in de volgorde waarin ze aangetikt zijn. Kent ook de
+ * vorm van voor versie 1.2 (twee aparte antwoorden), voor controles die toen
+ * begonnen zijn of nog in de wachtrij staan.
+ */
+export function operatorLijst(antwoorden) {
+  if (Array.isArray(antwoorden.operatoren)) return antwoorden.operatoren;
+  return [antwoorden.operator1, antwoorden.operator2].filter((x) => typeof x === 'string' && x.trim() !== '');
+}
+
 export const isNee = (waarde) => String(waarde == null ? '' : waarde).trim().toLowerCase() === 'nee';
 const isAfwijking = (waarde) => ['nok', 'stop'].includes(String(waarde == null ? '' : waarde).trim().toLowerCase());
 
@@ -103,6 +150,7 @@ export function isBeantwoord(id, antwoorden) {
   const v = VELDEN[id];
   if (isVervallen(id, antwoorden)) return true;
   if (v.soort === 'tekst') return true;
+  if (v.soort === 'meer') return operatorLijst(antwoorden).length > 0;
   const a = antwoorden[id];
   if (v.soort === 'getal') return a !== undefined && a !== '' && !isNaN(Number(String(a).replace(',', '.')));
   return a !== undefined;
@@ -114,18 +162,31 @@ export function opmerkingNodig(deel, antwoorden) {
   return afwijking && !String(antwoorden[OPMERKING[deel]] || '').trim();
 }
 
-/** Open punten van een deel, of van één groep ervan. */
-export function openPunten(deel, antwoorden, groep) {
-  const ids = groep === undefined ? veldenVan(deel) : GROEPEN[deel][groep].velden;
+/** Welke foto's ontbreken nog? Geeft de namen van de open fotopunten. */
+export function openFotos(fotos) {
+  const f = fotos || {};
+  return FOTOSOORTEN.filter((soort) => !FOTOS[soort].optioneel && !(f[soort] && (f[soort].fotoId || (FOTOS[soort].magNvt && f[soort].nvt)))).map((soort) => FOTOS[soort].punt);
+}
+
+/**
+ * Open punten van een deel, of van één groep ervan.
+ * d = het deel van de controle ({ antwoorden, fotos }).
+ */
+export function openPunten(deel, d, groep) {
+  const antwoorden = d.antwoorden;
+  const groepen = groep === undefined ? GROEPEN[deel] : [GROEPEN[deel][groep]];
+  const ids = groepen.flatMap((g) => g.velden);
   const open = ids.filter((id) => !isBeantwoord(id, antwoorden));
   const opm = OPMERKING[deel];
   if (ids.includes(opm) && opmerkingNodig(deel, antwoorden)) open.push(opm);
+  if (groepen.some((g) => g.fotos)) open.push(...openFotos(d.fotos));
   return open;
 }
 
 /** Zet een antwoord en wist antwoorden die daardoor vervallen. */
 export function zetAntwoord(antwoorden, id, waarde) {
   if (waarde === undefined) delete antwoorden[id]; else antwoorden[id] = waarde;
+  if (id === 'operatoren') { delete antwoorden.operator1; delete antwoorden.operator2; }
   Object.keys(VELDEN).forEach((ander) => {
     if (VELDEN[ander].nvtAls === id && isNee(waarde)) delete antwoorden[ander];
   });
@@ -145,7 +206,7 @@ export function nieuwId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-const leegDeel = () => ({ status: 'open', antwoorden: {}, versie: 0, afgeslotenOm: null, gezien: null, verzondenOm: null, rij: null });
+const leegDeel = () => ({ status: 'open', antwoorden: {}, fotos: {}, versie: 0, afgeslotenOm: null, gezien: null, verzondenOm: null, rij: null });
 
 /** item: een order of pallet uit de snapshot, of null bij een ingetypte code. */
 export function nieuweControle(code, item, bron) {
@@ -171,19 +232,149 @@ export function bouwVerzoek(controle, deel) {
   const vervallen = [];
   veldenVan(deel).forEach((id) => {
     if (isVervallen(id, d.antwoorden)) { vervallen.push(id); return; }
+    if (VELDEN[id].soort === 'meer') {
+      // De sheet heeft twee kolommen "Operator": de eerste naam, en de andere met een komma ertussen.
+      const namen = operatorLijst(d.antwoorden);
+      waarden.operator1 = namen[0] || '';
+      waarden.operator2 = namen.slice(1).join(', ');
+      return;
+    }
     const a = d.antwoorden[id];
     waarden[id] = a === undefined ? '' : a;
   });
-  return {
+  const verzoek = {
     appId: controle.appId,
     deel,
     datum: controle.datum,
     code: controle.code,
+    // De lijn zoals ze nu bij de controle staat (uit de productielijst, of gekozen door de controleur).
+    lijn: controle.lijn || '',
     waarden,
     vervallen,
     gezien: d.gezien,
     afgeslotenOm: d.afgeslotenOm
   };
+  if (deel === 'beneden') {
+    // De foto zelf volgt apart; de cel toont intussen "volgt" of blijft leeg.
+    const f = d.fotos || {};
+    verzoek.fotos = {};
+    FOTOSOORTEN.forEach((soort) => { verzoek.fotos[soort] = f[soort] && f[soort].fotoId ? 'volgt' : 'nvt'; });
+  }
+  return verzoek;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dagcontroles: Werkmaterialen boven en Magazijn en bufferzone        */
+/* ------------------------------------------------------------------ */
+
+export const DAGSOORTEN = ['werk', 'magazijn'];
+export const DAGNAAM = { werk: 'Werkmaterialen boven', magazijn: 'Magazijn en bufferzone' };
+// werk: "OK" of een opmerking. magazijn: OK of NOK met een opmerking.
+export const DAGKEUZE = { werk: ['OK', 'Opmerking'], magazijn: ['OK', 'NOK'] };
+
+export const dagId = (soort, datum = vandaag()) => `${soort}:${datum}`;
+
+/** datum: de dag waarop de dagcontrole begonnen is. Ze blijft bij die dag horen, ook na middernacht. */
+export function nieuweDag(soort, datum = vandaag()) {
+  return { id: dagId(soort, datum), soort, datum, aangemaaktOm: Date.now(), status: 'open', antwoorden: {}, metingen: {}, versie: 0, afgeslotenOm: null, verzondenOm: null, rij: null };
+}
+
+function gemeenschappelijk(teksten) {
+  if (teksten.length === 1) return teksten[0];
+  let n = 0;
+  while (teksten.every((t) => t[n] !== undefined && t[n] === teksten[0][n])) n++;
+  return teksten[0].slice(0, n).replace(/[\s\-–:L0-9]+$/, '').trim() || teksten[0].split(/\s+/)[0];
+}
+
+/**
+ * Verdeelt de controlepunten uit de snapshot over schermen. Punten die bij
+ * elkaar horen (zelfde eerste woord) blijven samen; hoogstens zes per scherm.
+ */
+export function dagGroepen(soort, snapshot) {
+  const def = snapshot && snapshot.dag && snapshot.dag[soort];
+  if (!def) return null;
+  const groepen = [];
+  if (def.metingen && def.metingen.length) groepen.push({ titel: 'Metingen', metingen: def.metingen, punten: [] });
+
+  let stukken = [];
+  if (soort === 'magazijn') {
+    for (let i = 0; i < def.punten.length; i += 4) stukken.push(def.punten.slice(i, i + 4));
+  } else {
+    // 1. opeenvolgende punten met hetzelfde eerste woord
+    const families = [];
+    def.punten.forEach((p) => {
+      const woord = p.kop.split(/\s+/)[0];
+      const laatste = families[families.length - 1];
+      if (laatste && laatste.woord === woord) laatste.punten.push(p); else families.push({ woord, punten: [p] });
+    });
+    // 2. grote families in gelijke stukken van hoogstens zes
+    families.forEach((f) => {
+      const delen = Math.ceil(f.punten.length / 6);
+      const per = Math.ceil(f.punten.length / delen);
+      for (let i = 0; i < f.punten.length; i += per) stukken.push(f.punten.slice(i, i + per));
+    });
+    // 3. een stuk van één of twee punten schuift bij een buur
+    const samen = [];
+    for (let i = 0; i < stukken.length; i++) {
+      const stuk = stukken[i];
+      const vorige = samen[samen.length - 1];
+      const volgende = stukken[i + 1];
+      if (stuk.length <= 2 && volgende && volgende.length + stuk.length <= 6) { stukken[i + 1] = stuk.concat(volgende); continue; }
+      if (stuk.length <= 2 && vorige && vorige.length + stuk.length <= 6) { samen[samen.length - 1] = vorige.concat(stuk); continue; }
+      samen.push(stuk);
+    }
+    stukken = samen;
+  }
+  let teller = 0;
+  stukken.forEach((punten) => {
+    let titel;
+    if (soort === 'magazijn') {
+      titel = `Inspecties ${teller + 1} tot ${teller + punten.length}`;
+    } else {
+      const namen = [];
+      let groep = [];
+      punten.forEach((p, i) => {
+        groep.push(p.kop);
+        const volgende = punten[i + 1];
+        if (!volgende || volgende.kop.split(/\s+/)[0] !== p.kop.split(/\s+/)[0]) { namen.push(gemeenschappelijk(groep)); groep = []; }
+      });
+      titel = namen.join(' en ');
+    }
+    teller += punten.length;
+    groepen.push({ titel, metingen: [], punten });
+  });
+  return groepen;
+}
+
+const isGetal = (x) => String(x == null ? '' : x).trim() !== '' && !isNaN(Number(String(x).replace(',', '.')));
+
+/** Open punten en metingen van een dagcontrole (de koppen), voor alle groepen of één groep. */
+export function dagOpen(dc, groepen, groep) {
+  const lijst = groep === undefined ? groepen : [groepen[groep]];
+  const open = [];
+  lijst.forEach((g) => {
+    g.metingen.forEach((m) => { if (!isGetal(dc.metingen[m.kop])) open.push(m.kop); });
+    g.punten.forEach((p) => {
+      const a = dc.antwoorden[p.kop];
+      if (!a || (a.ok !== true && !String(a.tekst || '').trim())) open.push(p.kop);
+    });
+  });
+  return open;
+}
+
+/** Het verzoek voor het script: alleen de punten die nu in de sheet bestaan. */
+export function bouwDagVerzoek(dc, snapshot) {
+  const groepen = dagGroepen(dc.soort, snapshot) || [];
+  const metingen = [];
+  const punten = [];
+  groepen.forEach((g) => {
+    g.metingen.forEach((m) => metingen.push({ kop: m.kop, waarde: String(dc.metingen[m.kop]).trim() }));
+    g.punten.forEach((p) => {
+      const a = dc.antwoorden[p.kop] || {};
+      punten.push(a.ok === true ? { kop: p.kop, ok: true } : { kop: p.kop, ok: false, tekst: String(a.tekst || '').trim() });
+    });
+  });
+  return { soort: dc.soort, datum: dc.datum, afgeslotenOm: dc.afgeslotenOm, metingen, punten };
 }
 
 /** Zoekt een code in de snapshot. */

@@ -167,3 +167,107 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .eind { text-align: center; padding: 32px 16px; border-radius: var(--straal); color: #fff; background: var(--wacht); margin: 12px 0; }
 .eind.groen { background: var(--ok); }
 .eind strong { display: block; font-size: 1.5rem; margin-bottom: 6px; }
+
+/* ---------- foto's ---------- */
+.punt .keuzes + .invoer { margin-top: 12px; }
+.foto-klein { display: block; max-width: 100%; max-height: 260px; border-radius: 8px; border: 1px solid var(--lijn); margin-top: 10px; }
+.keuze.gekozen.k-opm { background: var(--wacht); border-color: var(--wacht); }
+.camera {
+  position: fixed; inset: 0; z-index: 50; background: #000; color: #fff;
+  display: flex; flex-direction: column; padding: calc(8px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+}
+.camera-kop { font-weight: 700; padding: 8px 4px; }
+.camera video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #111; border-radius: 8px; }
+.camera-fout { color: #ffb4b4; min-height: 1.4em; margin: 8px 4px; }
+.camera-knoppen { display: flex; gap: 10px; flex-wrap: wrap; }
+.camera-knoppen .knop { flex: 1 1 160px; }
+.camera-knoppen .knop:not(.hoofd) { background: #222; color: #fff; border-color: #777; }
+
+/* ---------- een deel (Boven of Beneden) op één scherm ---------- */
+/* Alle punten in kolommen naast elkaar: drie op een liggende tablet van 12",
+   twee op een staande, één op een smal scherm. Elk punt is één regel. */
+#scherm.breed { max-width: none; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); }
+#scherm.breed > .melding { margin: 0 0 8px; padding: 8px 12px; }
+.deel-raster { columns: 3 340px; column-gap: 12px; }
+.deel-raster > * { break-inside: avoid; }
+.groep.info { background: var(--merk); color: #fff; border-radius: 10px; padding: 6px 12px; margin: 0 0 5px; }
+.groep.info h2 { margin: 0 0 2px; font-size: 1.05rem; }
+.groep.info .opzoek { font-size: .82rem; line-height: 1.25; gap: 0 10px; }
+.groep.info .opzoek dt, .groep.info .zacht { color: #c9d6e6; }
+.deel-raster .blok-boven { padding: 6px 12px; margin: 0 0 5px; font-size: .78rem; line-height: 1.25; border-radius: 10px; }
+.deel-raster .blok-boven h3 { font-size: .9rem; margin-bottom: 3px; }
+.deel-raster .blok-boven .opzoek { gap: 0 10px; }
+.deel-raster .melding.groep { margin: 0 0 6px; padding: 8px 12px; font-size: .9rem; }
+.groep-titel { font-size: .7rem; line-height: 1.2; text-transform: uppercase; letter-spacing: .05em; color: var(--zacht); margin: 5px 2px 2px; break-after: avoid; }
+
+.punt.regel { display: flex; align-items: center; gap: 8px; padding: 2px 3px 2px 10px; margin: 0 0 3px; min-height: 50px; border-radius: 10px; }
+.punt.regel .punt-naam { flex: 1; min-width: 0; }
+.punt.regel h3 { font-size: .9rem; line-height: 1.15; overflow-wrap: break-word; hyphens: auto; }
+.punt.regel .hulp { font-size: .7rem; line-height: 1.2; margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.punt.regel .punt-naam.uit .hulp { display: block; }
+.punt.regel .keuzes { margin: 0; gap: 5px; flex: none; flex-wrap: nowrap; align-items: center; }
+.punt.regel .keuze { flex: none; min-width: 58px; min-height: 44px; padding: 4px 8px; font-size: .92rem; border-radius: 9px; }
+.punt.regel .invoer.getal { flex: none; width: 122px; min-height: 44px; padding: 4px 10px; border-radius: 9px; }
+.punt.regel select.kies { flex: none; width: 240px; max-width: 55%; min-height: 44px; padding: 4px 8px; border-radius: 9px; font-weight: 700; }
+.punt.regel select.kies.gekozen { border-color: var(--actie); background: #e8f0fe; }
+.punt.regel.tekst { display: block; padding: 4px 6px 5px 10px; }
+.punt.regel.tekst textarea { display: block; min-height: 50px; margin-top: 3px; padding: 4px 10px; border-radius: 9px; }
+.punt.regel .nvt-auto { flex: none; margin: 0; padding: 9px 10px; font-size: .82rem; border-radius: 9px; }
+.punt.regel.open { border-width: 2px; padding: 1px 2px 1px 9px; }
+.punt.regel.open h3::after { content: ""; }
+.punt.regel .foto-klein { height: 44px; width: auto; max-width: 72px; margin: 0; object-fit: cover; cursor: zoom-in; }
+.slot { margin-top: 6px; }
+.slot .melding { margin: 0 0 4px; padding: 4px 10px; font-size: .78rem; line-height: 1.25; }
+.slot .knop { min-height: 50px; padding: 6px 20px; }
+.foto-groot img { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
+
+/* Brede schermen: de balk bovenaan op één regel, zodat er meer plaats is voor de punten. */
+@media (min-width: 1100px) {
+  #balk { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: 6px; }
+  #balk .balk-rij { flex: none; }
+  #balk .balk-rij + .balk-rij { margin-top: 0; flex: 1 1 500px; flex-wrap: nowrap; }
+  #balk .balk-titel { flex: none; }
+}
+
+/* Boven heeft maar vijf punten: één kolom in het midden, met grotere knoppen. */
+.deel-raster[data-deel="boven"] { columns: 1; max-width: 680px; margin: 0 auto; }
+.deel-raster[data-deel="boven"] .punt.regel { min-height: 62px; margin-bottom: 6px; padding: 3px 6px 3px 14px; }
+.deel-raster[data-deel="boven"] .punt.regel h3 { font-size: 1rem; }
+.deel-raster[data-deel="boven"] .punt.regel .keuze { min-width: 76px; min-height: 56px; font-size: 1.05rem; }
+.deel-raster[data-deel="boven"] .punt.regel select.kies { width: 300px; min-height: 56px; }
+.deel-raster[data-deel="boven"] .punt.regel.tekst { padding: 6px 8px 8px 14px; }
+.deel-raster[data-deel="boven"] .punt.regel.tekst textarea { min-height: 64px; }
+.deel-raster[data-deel="boven"] .groep.info { padding: 8px 14px; margin-bottom: 8px; }
+.deel-raster[data-deel="boven"] .groep.info .opzoek { font-size: .95rem; line-height: 1.35; }
+.deel-raster[data-deel="boven"] .slot .knop { min-height: 56px; }
+
+/* ---------- punten die bij elkaar horen (Mono/Duo en Snelheid) ---------- */
+.deel-raster .samen > .groep-titel { margin-top: 5px; }
+
+/* ---------- operatoren: de gekozen namen en het keuzescherm ---------- */
+.punt.regel .namen { font-size: .86rem; font-weight: 700; color: var(--actie); line-height: 1.2; overflow-wrap: anywhere; }
+.kiezer {
+  position: fixed; inset: 0; z-index: 40; background: var(--vlak); overflow: auto;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: calc(14px + env(safe-area-inset-top)) 16px calc(14px + env(safe-area-inset-bottom));
+}
+.kiezer h2 { margin: 0; }
+.kiezer-gekozen { font-weight: 700; min-height: 1.4em; }
+.kiezer-lijst { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; align-content: start; }
+.kiezer-lijst .keuze { min-height: 68px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.kiezer-lijst .keuze small { font-weight: 400; font-size: .72rem; opacity: .8; }
+.kiezer-nieuw { display: flex; gap: 10px; align-items: stretch; }
+.kiezer-nieuw .invoer { flex: 1; }
+.kiezer .knoppen { margin-top: 0; }
+
+/* Smalle kolommen (staande tablet): iets smallere knoppen, zodat de naam van het punt niet midden in een woord breekt. */
+@media (max-width: 900px) {
+  .deel-raster[data-deel="beneden"] .punt.regel .keuze { min-width: 52px; padding: 4px 6px; }
+}
+
+/* ---------- de lijn van de productie, in de kop van het deel ---------- */
+.kop-rij { display: flex; align-items: center; gap: 10px; }
+.kop-rij h2 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.lijn-keuze { flex: none; display: flex; align-items: center; gap: 8px; font-size: .82rem; color: #c9d6e6; }
+.lijn-keuze select.kies { width: auto; min-width: 118px; max-width: 190px; min-height: 44px; padding: 4px 8px; border-radius: 9px; font-weight: 700; color: var(--inkt); }
+.lijn-keuze select.kies.gekozen { border-color: #fff; background: #fff; }

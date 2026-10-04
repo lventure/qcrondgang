@@ -21,6 +21,34 @@ const QC_KOPPEN = {
   AV: 'Grondstof & Zakje verschillend lot?', AW: 'Allergenen gelijk?'
 };
 
+const TAB_WERK = 'Rondgang Werkmaterialen Boven';
+const TAB_MAGAZIJN = 'Magazijn en bufferzone';
+const WERK_KOPPEN = [
+  'Trechter 1 - Vierkant\n\nMes ok?', 'Trechter 2 - Zwaar\n\nMes ok?', 'Trechter 3 - Klein\n\nMes ok?',
+  'Inspectie afvulbuizen',
+  'Werk- & poetsmateriaal L4\n\nPlatte schroevendraaier\nVloerborstel\nok?', 'Werk- & poetsmateriaal L5\n\n2 Halve maan sleutels\nok?',
+  'Takel 1\n\nHamer ok?', 'Takel 2\n\nHamer ok?', 'Mottenval L4'
+];
+const MAGAZIJN_PUNTEN = [
+  { ok: 'E', actief: true, kop: 'Inspectie verzending vracht: Netjes? Palletblad? Hoeken? Afgedekt?' },
+  { ok: 'H', actief: true, kop: 'Inspectie materiaal: transpalletten + heftruck proper?' },
+  { ok: 'K', actief: false, kop: 'Inspectie afvulbuizen: proper? Intact?' },
+  { ok: 'N', actief: true, kop: 'Inspectie ongedierte: Nergens uitwerpselen te zien?' },
+  { ok: 'R', actief: true, kop: 'Afvalstraatje (netheid omgeving afvalcontainer)' }
+];
+
+/** Een datum op n dagen van vandaag, om middernacht. */
+function dag(verschil) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + verschil);
+  return d;
+}
+function iso(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 const OPERATOREN = ['AB', 'CD', 'EF', 'GH', 'IJ', 'KL', 'Interim/Flexi'];
 const JA_NEE = ['JA', 'NEE'];
 const OK3 = ['OK', 'NOK', 'NVT'];
@@ -107,7 +135,52 @@ function maakFixture({ legeRijen = 3 } = {}) {
   const imp2 = qc.nieuwTab('poco list', 40, 8);
   imp2.cel(1, 1, true).f = `=IMPORTRANGE("https://docs.google.com/spreadsheets/d/${ID_POCO}/edit";"pocolist!1:6000")`;
 
-  return { qc, tab, prod, pTab, poco, cTab, opId: { [ID_PROD]: prod, [ID_POCO]: poco }, QC_TAB };
+  // --- dagtabblad 1: Rondgang Werkmaterialen Boven (één rij per kalenderdag, datums vooraf ingevuld)
+  const werk = qc.nieuwTab(TAB_WERK, 2 + 13, WERK_KOPPEN.length + 2);
+  werk.cel(1, 1, true).v = 'Begin meting 20/08/2025';
+  werk.cel(1, 2, true).v = 'Boven';
+  werk.cel(2, 1, true).v = 'Tijdstempel';
+  WERK_KOPPEN.forEach((k, i) => { werk.cel(2, i + 2, true).v = k; });
+  werk.cel(2, WERK_KOPPEN.length + 2, true).v = 'Controle afgewerkt?';
+  werk.cel(3, 1, true).v = '20/08/2025'; // oude rij met de datum als tekst
+  for (let i = 0; i < 12; i++) werk.cel(4 + i, 1, true).v = dag(i - 6); // vandaag = rij 10
+  WERK_KOPPEN.forEach((k, i) => { werk.cel(8, i + 2, true).v = 'OK'; }); // twee dagen geleden ingevuld
+  werk.cel(8, WERK_KOPPEN.length + 2, true).v = 'Ja';
+
+  // --- dagtabblad 2: Magazijn en bufferzone (rij 2 = koppen, rij 3 = OK/NOK, vanaf rij 4 gegevens)
+  const mag = qc.nieuwTab(TAB_MAGAZIJN, 3 + 5, 20);
+  mag.cel(1, 1, true).v = 'Begin meting 12/09/2024';
+  ['Datum', 'Temperatuur magazijn (in C°)', 'Temperatuur Koelkast eetzaal', 'Luchtvochtigheid magazijn (in %)20,7'].forEach((k, i) => { mag.cel(2, i + 1, true).v = k; });
+  // kolom E: eerste punt. Het derde punt (K/L/M) heeft koppen maar geen selectievakjes; R is een lege kolom.
+  MAGAZIJN_PUNTEN.forEach((punt) => {
+    const c = letterNaarKolom(punt.ok);
+    mag.cel(2, c, true).v = punt.kop;
+    mag.cel(2, c + 2, true).v = 'Opmerking NOK';
+    mag.cel(3, c, true).v = 'OK';
+    mag.cel(3, c + 1, true).v = 'NOK';
+  });
+  const bereidMagazijn = (r) => {
+    mag.cel(r, 1, true).f = `=IFS(B${r}="";"";A${r}="";NOW();TRUE;A${r})`;
+    MAGAZIJN_PUNTEN.filter((x) => x.actief).forEach((punt) => {
+      const c = letterNaarKolom(punt.ok);
+      Object.assign(mag.cel(r, c, true), { v: false, dv: vakjeRegel() });
+      Object.assign(mag.cel(r, c + 1, true), { v: false, dv: vakjeRegel() });
+      mag.cel(r, c + 2, true).f = `=if(${punt.ok}${r};"NVT";)`;
+    });
+  };
+  for (let r = 4; r <= 8; r++) bereidMagazijn(r);
+  // twee ingevulde dagen: rij 4 (drie dagen geleden, alles OK) en rij 5 (gisteren, één NOK)
+  [[4, -3], [5, -1]].forEach(([r, verschil]) => {
+    const d = dag(verschil); d.setHours(8, 30);
+    Object.assign(mag.cel(r, 1), { v: d, f: '' });
+    mag.cel(r, 2, true).v = 24; mag.cel(r, 3, true).v = 3; mag.cel(r, 4, true).v = 55;
+    MAGAZIJN_PUNTEN.filter((x) => x.actief).forEach((punt) => { mag.cel(r, letterNaarKolom(punt.ok)).v = true; });
+  });
+  Object.assign(mag.cel(5, letterNaarKolom('H')), { v: false });
+  mag.cel(5, letterNaarKolom('I')).v = true;
+  Object.assign(mag.cel(5, letterNaarKolom('J')), { v: 'heftruck vuil', f: '' });
+
+  return { qc, tab, werk, mag, prod, pTab, poco, cTab, opId: { [ID_PROD]: prod, [ID_POCO]: poco }, QC_TAB };
 }
 
-module.exports = { maakFixture, QC_TAB, QC_KOPPEN, OPERATOREN, OK3, OK4, JA_NEE, TRECHTERS, FORMULE_KOLOMMEN };
+module.exports = { maakFixture, QC_TAB, QC_KOPPEN, OPERATOREN, OK3, OK4, JA_NEE, TRECHTERS, FORMULE_KOLOMMEN, TAB_WERK, TAB_MAGAZIJN, WERK_KOPPEN, MAGAZIJN_PUNTEN, dag, iso };

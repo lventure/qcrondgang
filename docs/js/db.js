@@ -1,11 +1,18 @@
 // Lokale opslag (IndexedDB). Eigen naam, want Palletscan deelt dezelfde oorsprong.
 const DB_NAAM = 'qc-rondgang';
-const DB_VERSIE = 1;
+const DB_VERSIE = 2;
 
 // Pas bevestigen als het echt op de opslag staat, ook bij een plotse stroomuitval.
 const STRIKT = { durability: 'strict' };
 
 let dbBelofte = null;
+let bijGeblokkeerd = null;
+let bijVersieWissel = null;
+
+/** fn wordt geroepen als het openen wacht op een ander tabblad met de vorige versie van de opslag. */
+export function opGeblokkeerd(fn) { bijGeblokkeerd = fn; }
+/** fn wordt geroepen als een nieuwere versie van de app de opslag wil bijwerken (deze verbinding is dan al gesloten). */
+export function opVersieWissel(fn) { bijVersieWissel = fn; }
 
 function open() {
   if (!dbBelofte) {
@@ -17,12 +24,26 @@ function open() {
         if (!db.objectStoreNames.contains('referentie')) db.createObjectStore('referentie');
         if (!db.objectStoreNames.contains('controles')) db.createObjectStore('controles', { keyPath: 'appId' });
         if (!db.objectStoreNames.contains('wachtrij')) db.createObjectStore('wachtrij', { keyPath: 'id' });
-        // Fase 2. Nu al aangemaakt, zodat er later geen migratie nodig is.
+        // Versie 2: dagcontroles (Werkmaterialen boven, Magazijn en bufferzone).
+        if (!db.objectStoreNames.contains('dagcontroles')) db.createObjectStore('dagcontroles', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('fotos')) {
           db.createObjectStore('fotos', { keyPath: 'id' }).createIndex('appId', 'appId');
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      // Een ander tabblad houdt de vorige versie van de opslag open: het openen
+      // wacht en gaat vanzelf verder zodra dat tabblad gesloten is.
+      req.onblocked = () => { if (bijGeblokkeerd) bijGeblokkeerd(); };
+      req.onsuccess = () => {
+        const db = req.result;
+        // Een nieuwere versie van de app wil de opslag bijwerken: loslaten, anders
+        // blijft die nieuwe versie op een leeg scherm wachten.
+        db.onversionchange = () => {
+          db.close();
+          dbBelofte = null;
+          if (bijVersieWissel) bijVersieWissel();
+        };
+        resolve(db);
+      };
       req.onerror = () => { dbBelofte = null; reject(req.error); };
     });
   }
@@ -80,6 +101,24 @@ export async function werkBij(store, sleutel, fn) {
   req.onsuccess = () => {
     uit = req.result;
     if (uit === undefined) return;
+    if (fn(uit) === false) return;
+    os.put(uit);
+  };
+  return klaar(tx, () => uit);
+}
+
+/**
+ * Zoals werkBij, maar maakt het record eerst aan (met maak()) als het nog niet
+ * bestaat. Alles in één transactie.
+ */
+export async function werkBijOfMaak(store, sleutel, maak, fn) {
+  const db = await open();
+  const tx = db.transaction(store, 'readwrite', STRIKT);
+  const os = tx.objectStore(store);
+  let uit;
+  const req = os.get(sleutel);
+  req.onsuccess = () => {
+    uit = req.result === undefined ? maak() : req.result;
     if (fn(uit) === false) return;
     os.put(uit);
   };

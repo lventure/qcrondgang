@@ -1,13 +1,14 @@
 /**
- * QC Rondgang - backend (fase 1)
+ * QC Rondgang - backend (fase 1 tot 3)
  * Apps Script, gebonden aan de sheet "QC Productie dagelijkse rondgang".
  *
  * Wat dit script doet:
  *   - ping      : nakijken of adres en sleutel kloppen
  *   - snapshot  : orders, pallets en keuzelijsten ophalen
  *   - controle  : een deel (Boven of Beneden) van een controle wegschrijven
- *
- * Wat dit script NIET doet: foto's (fase 2) en de twee dagtabbladen (fase 3).
+ *   - foto      : een foto bewaren in Drive en de link in de rij zetten (een
+ *                 vervangen foto gaat naar de prullenbak van Drive)
+ *   - dagcontrole: "Rondgang Werkmaterialen Boven" of "Magazijn en bufferzone"
  *
  * Eenmalig: voer installeer() uit vanuit de editor. Daarna implementeren als
  * web-app (Uitvoeren als: ik, Toegang: Iedereen). Zie LEESMIJ.md.
@@ -29,7 +30,20 @@ const INST = {
   ORDER_UIT: ['klaar'],
   PALLET_UIT: ['klaar', 'niet gebruikt', 'shipped', 'vernietigd'],
   WACHT_OP_SLOT_MS: 20000,
-  VERSIE: '1.2.0'
+  // De twee dagtabbladen. Koprij = de rij met de namen van de controlepunten.
+  TAB_WERK: 'Rondgang Werkmaterialen Boven',
+  WERK_KOPRIJ: 2,
+  TAB_MAGAZIJN: 'Magazijn en bufferzone',
+  MAGAZIJN_KOPRIJ: 2,
+  // De lijnen waaruit de controleur kiest. De lijn komt uit de productielijst,
+  // maar kan op het laatste moment wijzigen. Te overschrijven met Script
+  // Property LIJNEN (namen met een komma ertussen), zonder de code te wijzigen.
+  LIJNEN: ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'MUL', 'STICKS', 'GELPACK 1', 'GELPACK 2', 'VOLPAK'],
+  // Map in Drive voor de foto's. De map zelf wordt onthouden in Script Property FOTO_MAP_ID.
+  FOTO_MAP: "QC foto's",
+  FOTO_TEKST: { zk: 'Foto ZK', etiket: 'Foto etiket', opmerking: 'Foto opmerking' },
+  FOTO_NAAM: { zk: 'ZK', etiket: 'etiket', opmerking: 'opmerking' },
+  VERSIE: '2.2.0'
 };
 
 /**
@@ -42,15 +56,21 @@ const INST = {
  * soort: 'vakje' (selectievakje), 'lijst' (keuzelijst), 'getal', 'tekst'
  * nde  : de hoeveelste kolom met die kop (voor de twee kolommen "Operator")
  * nvtAls: het veld waarvan dit punt afhangt (NEE daar = automatisch NVT hier)
+ * optioneel: ontbreekt de kolom, dan werkt de rest gewoon door
+ * vrij : keuzelijst waar ook een andere waarde in mag (een operator die niet in
+ *        de lijst staat, of meerdere namen met een komma ertussen)
  */
 const VELDEN = [
   { id: 'tijdstempel', deel: 'gemeen', kop: /^tijdstempel/ },
   { id: 'code', deel: 'gemeen', kop: /^productiecode/ },
+  // De lijn: in de sheet een formule die de productielijst volgt. Kiest of
+  // bevestigt de controleur de lijn in de app, dan komt die waarde in de cel.
+  { id: 'lijn', deel: 'gemeen', kop: /^lijn$/, optioneel: true },
 
   { id: 'lotZkCorrect', deel: 'beneden', soort: 'vakje', kop: /^lotzkcorrect/ },
   { id: 'allergenenCorrect', deel: 'beneden', soort: 'vakje', kop: /^allergenencorrect/ },
-  { id: 'operator1', deel: 'beneden', soort: 'lijst', kop: /^operator/, nde: 1 },
-  { id: 'operator2', deel: 'beneden', soort: 'lijst', kop: /^operator/, nde: 2 },
+  { id: 'operator1', deel: 'beneden', soort: 'lijst', kop: /^operator/, nde: 1, vrij: true },
+  { id: 'operator2', deel: 'beneden', soort: 'lijst', kop: /^operator/, nde: 2, vrij: true },
   { id: 'checkweger', deel: 'beneden', soort: 'lijst', kop: /^checkweger/ },
   { id: 'cwGewicht', deel: 'beneden', soort: 'lijst', kop: /^gewichtcheckw/, nvtAls: 'checkweger' },
   { id: 'cwPlus', deel: 'beneden', soort: 'lijst', kop: /^controle\+1/, nvtAls: 'checkweger' },
@@ -70,6 +90,10 @@ const VELDEN = [
   { id: 'cDocumenten', deel: 'beneden', soort: 'lijst', kop: /^documenten/ },
   { id: 'cAllergenen', deel: 'beneden', soort: 'lijst', kop: /^allergenenbeleid/ },
 
+  // Foto's: geen gewoon invoerveld; de link komt van de actie "foto".
+  { id: 'fotoZk', deel: 'beneden', kop: /^fotozk/, foto: 'zk' },
+  { id: 'fotoEtiket', deel: 'beneden', kop: /^fotoetiket/, foto: 'etiket' },
+
   { id: 'grdCorrect', deel: 'boven', soort: 'vakje', kop: /^grdcorrect/ },
   { id: 'allergeenEtiket', deel: 'boven', soort: 'vakje', kop: /^allergenetiket/ },
   { id: 'trechter', deel: 'boven', soort: 'lijst', kop: /^trechter/ },
@@ -86,7 +110,9 @@ const VELDEN = [
   { id: 'gezienAllergenenBeneden', deel: 'beneden', kop: /^gezien:allergenen\(beneden\)$/, nieuw: 'Gezien: allergenen (beneden)', gezien: 'allergenen' },
   { id: 'gezienGrondstof', deel: 'boven', kop: /^gezien:grondstof$/, nieuw: 'Gezien: grondstof', gezien: 'grondstof' },
   { id: 'gezienLotGrd', deel: 'boven', kop: /^gezien:lotgrd$/, nieuw: 'Gezien: LOT GRD', gezien: 'lotGrd' },
-  { id: 'gezienAllergenenBoven', deel: 'boven', kop: /^gezien:allergenen\(boven\)$/, nieuw: 'Gezien: allergenen (boven)', gezien: 'allergenen' }
+  { id: 'gezienAllergenenBoven', deel: 'boven', kop: /^gezien:allergenen\(boven\)$/, nieuw: 'Gezien: allergenen (boven)', gezien: 'allergenen' },
+  // Optionele foto bij een opmerking (NOK). De sheet had er geen kolom voor.
+  { id: 'fotoOpmerking', deel: 'beneden', kop: /^fotoopmerking$/, nieuw: 'Foto opmerking', foto: 'opmerking' }
 ];
 
 /* ------------------------------------------------------------------ */
@@ -125,6 +151,10 @@ function verwerk_(verzoek) {
       return snapshot_();
     case 'controle':
       return controle_(verzoek);
+    case 'foto':
+      return foto_(verzoek);
+    case 'dagcontrole':
+      return dagcontrole_(verzoek);
     default:
       return { ok: false, code: 'ACTIE', fout: 'Onbekende actie: ' + verzoek.actie };
   }
@@ -184,6 +214,7 @@ function kolommen_(tab) {
     genormd.forEach(function (k, i) { if (veld.kop.test(k)) treffers.push(i + 1); });
     const nde = veld.nde || 1;
     const verwacht = VELDEN.filter(function (v) { return String(v.kop) === String(veld.kop); }).length;
+    if (veld.optioneel && (treffers.length < nde || treffers.length > verwacht)) return;
     if (treffers.length < nde) {
       fouten.push(veld.nieuw
         ? 'Kolom "' + veld.nieuw + '" ontbreekt. Voer installeer() uit.'
@@ -268,6 +299,15 @@ function zoekRijen_(tab, kol, appId) {
   return { rij: rij, vrij: rij ? 0 : vrijeRij_(tab, kol), weg: 'SpreadsheetApp' };
 }
 
+/** De lijnen waaruit de controleur kiest: Script Property LIJNEN, anders de lijst in INST. */
+function lijnen_() {
+  const eigen = PropertiesService.getScriptProperties().getProperty('LIJNEN');
+  const lijst = eigen ? eigen.split(',') : INST.LIJNEN;
+  const uit = [];
+  lijst.forEach(function (x) { x = String(x).trim(); if (x && uit.indexOf(x) === -1) uit.push(x); });
+  return uit;
+}
+
 function nvtFormule_(kol, veld, rij) {
   return '=IF(' + letter_(kol[veld.nvtAls]) + rij + '="nee";"NVT";)';
 }
@@ -344,6 +384,26 @@ function snapshot_(dwing) {
   });
 
   const velden = k.fouten.length ? {} : leesVelden_(tab, k);
+  if (!k.kol.lijn) waarschuwingen.push('Kolom "Lijn" niet gevonden in rij ' + INST.KOPRIJ + ': de lijn die de controleur kiest, komt niet in de sheet.');
+
+  // De controlepunten van de twee dagtabbladen. Lukt dat niet, dan blijven de
+  // productiecontroles werken en meldt de app wat er scheelt.
+  const dag = {};
+  ['werk', 'magazijn'].forEach(function (soort) {
+    try {
+      const ind = dagIndeling_(ss, soort);
+      dag[soort] = {
+        tab: ind.tab.getName(),
+        metingen: ind.metingen.map(function (m) { return { kop: m.kop }; }),
+        punten: ind.punten.map(function (p) { return { kop: p.kop, hulp: p.hulp }; })
+      };
+    } catch (err) {
+      dag[soort] = null;
+      waarschuwingen.push('Dagcontrole "' + soort + '": ' + err.message);
+    }
+    tik_('Dagtabblad ' + soort + ': controlepunten lezen');
+  });
+
   return {
     ok: true,
     om: new Date().toISOString(),
@@ -351,6 +411,8 @@ function snapshot_(dwing) {
     orders: ordersUit,
     pallets: palletsUit,
     velden: velden,
+    lijnen: lijnen_(),
+    dag: dag,
     bron: { orders: orders.bron, pallets: pallets.bron },
     waarschuwingen: waarschuwingen
   };
@@ -550,6 +612,8 @@ function controle_(v) {
   if (!code || code.length > 40) return fout('VERZOEK', 'Ongeldige code.');
   const waarden = v.waarden || {};
   const vervallen = v.vervallen || [];
+  const lijn = String(v.lijn == null ? '' : v.lijn).replace(/\s+/g, ' ').trim();
+  if (lijn.length > 30) return fout('VERZOEK', 'Ongeldige lijn.');
 
   const slot = LockService.getScriptLock();
   try {
@@ -603,6 +667,14 @@ function controle_(v) {
       return { ok: true, appId: v.appId, deel: v.deel, rij: rij, nieuw: false, verouderd: true };
     }
 
+    // De lijn die de controleur koos of bevestigde, vervangt de formule van de
+    // sheet in deze rij. Zonder lijn (pallet, code buiten de lijst, oudere
+    // versie van de app) blijft de formule staan.
+    if (lijn && kol.lijn) {
+      const lijnCel = tab.getRange(rij, kol.lijn);
+      if (inKeuzelijst_(lijnCel.getDataValidation(), lijn)) lijnCel.setValue(lijn); else zetBuitenLijst_(lijnCel, lijn);
+    }
+
     // 3. Alleen de kolommen van het ontvangen deel.
     const formules = tab.getRange(rij, 1, 1, tab.getLastColumn()).getFormulas()[0];
     VELDEN.forEach(function (veld) {
@@ -616,6 +688,22 @@ function controle_(v) {
       if (!Object.prototype.hasOwnProperty.call(waarden, veld.id)) return;
       zet_(cel, veld, waarden[veld.id]);
     });
+
+    // Foto's: "volgt" zolang de foto nog in de wachtrij van de tablet zit. Een
+    // link die er al staat blijft staan; "nvt" maakt de cel leeg.
+    if (v.fotos) {
+      VELDEN.forEach(function (veld) {
+        if (veld.deel !== v.deel || !veld.foto) return;
+        const cel = tab.getRange(rij, kol[veld.id]);
+        const stand = v.fotos[veld.foto];
+        if (stand === 'nvt') {
+          // Stond er al een foto, dan wijst de sheet er niet meer naar: prullenbak.
+          const vorige = eigenFoto_(linkVan_(cel), v.appId, veld.foto);
+          cel.clearContent();
+          naarPrullenbak_(vorige);
+        } else if (stand === 'volgt' && String(cel.getValue()) === '') cel.setValue('volgt');
+      });
+    }
 
     // Wat de controleur zag.
     VELDEN.forEach(function (veld) {
@@ -660,7 +748,19 @@ function nieuweRij_(tab, kol) {
   // kolommen): wissen. Formules, validatie en opmaak blijven staan.
   const formules = tab.getRange(doel, 1, 1, breedte).getFormulas()[0];
   for (let c = 1; c <= breedte; c++) if (!formules[c - 1]) tab.getRange(doel, c).clearContent();
+  // De rij erboven kan in "Lijn" een gekozen waarde hebben in plaats van de
+  // formule van de sheet. De nieuwe rij krijgt dan de formule van de dichtste
+  // rij erboven die ze nog heeft, zodat wie met de hand invult ze behoudt.
+  if (kol.lijn && !formules[kol.lijn - 1]) {
+    const eerder = tab.getRange(INST.EERSTE_RIJ, kol.lijn, boven - INST.EERSTE_RIJ + 1, 1).getFormulas();
+    for (let r = eerder.length - 1; r >= 0; r--) {
+      if (!eerder[r][0]) continue;
+      tab.getRange(INST.EERSTE_RIJ + r, kol.lijn).copyTo(tab.getRange(doel, kol.lijn));
+      break;
+    }
+  }
   VELDEN.forEach(function (veld) {
+    if (!kol[veld.id]) return;
     const cel = tab.getRange(doel, kol[veld.id]);
     if (veld.nvtAls) cel.setFormula(nvtFormule_(kol, veld, doel));
     else if (veld.soort === 'vakje') cel.setValue(false);
@@ -679,7 +779,32 @@ function zet_(cel, veld, waarde) {
   }
   // lijst: een keuze die een getal is, wordt als getal geschreven (zoals getypt).
   const s = String(waarde);
+  if (veld.vrij && !inKeuzelijst_(cel.getDataValidation(), s)) { zetBuitenLijst_(cel, s); return; }
   cel.setValue(String(Number(s)) === s ? Number(s) : s);
+}
+
+/** Staat de waarde in de keuzelijst van de cel? Zonder keuzelijst is alles toegelaten. */
+function inKeuzelijst_(regel, tekst) {
+  if (!regel) return true;
+  const T = SpreadsheetApp.DataValidationCriteria;
+  const type = regel.getCriteriaType();
+  const args = regel.getCriteriaValues();
+  let lijst = null;
+  if (type === T.VALUE_IN_LIST) lijst = args[0];
+  else if (type === T.VALUE_IN_RANGE) lijst = [].concat.apply([], args[0].getDisplayValues());
+  if (!lijst) return false;
+  return lijst.map(function (x) { return String(x).trim(); }).indexOf(tekst) !== -1;
+}
+
+/**
+ * Schrijft een waarde die niet in de keuzelijst van de cel staat (een operator
+ * buiten de lijst, of meerdere namen). De keuzelijst van deze ene cel blijft,
+ * maar weigert de waarde niet meer: ze toont dan een waarschuwing.
+ */
+function zetBuitenLijst_(cel, tekst) {
+  const regel = cel.getDataValidation();
+  if (regel && !regel.getAllowInvalid()) cel.setDataValidation(regel.copy().setAllowInvalid(true).build());
+  zetTekst_(cel, tekst);
 }
 
 /** Schrijft vrije tekst als tekst: geen formule, geen datum, geen getal. */
@@ -687,6 +812,415 @@ function zetTekst_(cel, tekst) {
   let s = String(tekst);
   if (/^[=+\-@']/.test(s)) s = "'" + s;
   cel.setNumberFormat('@').setValue(s);
+}
+
+/* ------------------------------------------------------------------ */
+/* foto                                                                */
+/* ------------------------------------------------------------------ */
+
+/** De map "QC foto's": naast de sheet, één keer aangemaakt en daarna onthouden. */
+function fotoMap_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('FOTO_MAP_ID');
+  if (id) {
+    // Een fout hier (storing bij Drive, geen toegang) maakt GEEN tweede map: de
+    // foto's zouden dan over twee mappen verspreid raken. De tablet probeert
+    // het later opnieuw. Is de map echt weg: voer nieuweFotoMap() uit.
+    let map;
+    try {
+      map = DriveApp.getFolderById(id);
+    } catch (err) {
+      throw new Error('De map "' + INST.FOTO_MAP + '" is niet bereikbaar (' + ((err && err.message) || err) + '). Is ze verwijderd, voer dan nieuweFotoMap() uit in de editor.');
+    }
+    if (map.isTrashed()) throw new Error('De map "' + INST.FOTO_MAP + '" staat in de prullenbak. Zet ze terug, of voer nieuweFotoMap() uit in de editor.');
+    return map;
+  }
+  let ouder = null;
+  try {
+    const ouders = DriveApp.getFileById(SpreadsheetApp.getActiveSpreadsheet().getId()).getParents();
+    if (ouders.hasNext()) ouder = ouders.next();
+  } catch (err) { ouder = null; }
+  const map = ouder ? ouder.createFolder(INST.FOTO_MAP) : DriveApp.createFolder(INST.FOTO_MAP);
+  props.setProperty('FOTO_MAP_ID', map.getId());
+  return map;
+}
+
+/** De submap met deze naam (niet uit de prullenbak), of een nieuwe. */
+function subMap_(map, naam) {
+  const bestaand = map.getFoldersByName(naam);
+  while (bestaand.hasNext()) {
+    const m = bestaand.next();
+    if (!m.isTrashed()) return m;
+  }
+  return map.createFolder(naam);
+}
+
+/** Het adres waar de link in een cel naar wijst, of '' als er geen link in staat. */
+function linkVan_(cel) {
+  try {
+    const rt = cel.getRichTextValue();
+    return (rt && rt.getLinkUrl()) || '';
+  } catch (err) { return ''; }
+}
+
+/**
+ * De foto waar een link naar wijst, als dit script ze zelf voor deze controle
+ * en deze soort bewaard heeft (te zien aan de beschrijving van het bestand).
+ * Anders null: een ander bestand raakt het script nooit aan.
+ * Beschrijving: "QC Rondgang <app-ID> <soort> <foto-ID> <genomen om>".
+ */
+function eigenFoto_(url, appId, soort) {
+  const m = /\/d\/([A-Za-z0-9_-]+)/.exec(String(url || '')) || /[?&]id=([A-Za-z0-9_-]+)/.exec(String(url || ''));
+  if (!m) return null;
+  try {
+    const bestand = DriveApp.getFileById(m[1]);
+    const delen = String(bestand.getDescription() || '').split(' ');
+    if (delen[0] !== 'QC' || delen[1] !== 'Rondgang' || delen[2] !== appId || delen[3] !== soort) return null;
+    return { bestand: bestand, id: m[1], fotoId: delen[4] || '', genomenOm: new Date(delen[5] || '') };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Verplaatst een foto waar de sheet niet meer naar wijst naar de prullenbak van
+ * Drive (daar blijft ze nog 30 dagen terug te halen). Mislukt het, dan blijft
+ * het bestand gewoon staan: de schrijfactie zelf gaat door.
+ */
+function naarPrullenbak_(foto) {
+  if (!foto) return false;
+  try {
+    if (!foto.bestand.isTrashed()) foto.bestand.setTrashed(true);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function veiligeNaam_(tekst) {
+  return String(tekst == null ? '' : tekst).trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
+}
+
+/**
+ * Bewaart één foto in Drive en zet de link in de rij van de controle.
+ * Bestaat de rij nog niet, dan antwoordt het script "later opnieuw". Een
+ * herhaling van dezelfde foto (zelfde foto-ID) maakt nooit een tweede bestand.
+ */
+function foto_(v) {
+  const fout = function (code, tekst) { return { ok: false, code: code, fout: tekst }; };
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuid.test(String(v.appId || ''))) return fout('VERZOEK', 'Ongeldig app-ID.');
+  if (!uuid.test(String(v.fotoId || ''))) return fout('VERZOEK', 'Ongeldig foto-ID.');
+  if (!Object.prototype.hasOwnProperty.call(INST.FOTO_TEKST, v.soort)) return fout('VERZOEK', 'Ongeldige soort foto.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.datum || ''))) return fout('VERZOEK', 'Ongeldige datum.');
+  if (typeof v.data !== 'string' || v.data.length < 100) return fout('VERZOEK', 'Geen foto ontvangen.');
+
+  const slot = LockService.getScriptLock();
+  try {
+    slot.waitLock(INST.WACHT_OP_SLOT_MS);
+  } catch (err) {
+    return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'De sheet is bezet, probeer opnieuw.' };
+  }
+  try {
+    const tab = qcTab_();
+    let k;
+    try { k = kolommenOfFout_(tab); } catch (err) { return fout('INDELING', err.message); }
+    const kol = k.kol;
+    const rij = zoekRijen_(tab, kol, v.appId).rij;
+    if (!rij) return { ok: false, code: 'LATER', tijdelijk: true, fout: 'De controle staat nog niet in de sheet; de foto volgt later.' };
+
+    const veld = VELDEN.filter(function (x) { return x.foto === v.soort; })[0];
+    const cel = tab.getRange(rij, kol[veld.id]);
+    // Wijst de cel al naar een foto van deze controle die later genomen is, dan
+    // is dit een oud verzoek dat te laat aankomt: de nieuwere foto blijft staan.
+    const vorige = eigenFoto_(linkVan_(cel), v.appId, v.soort);
+    const genomen = new Date(v.genomenOm);
+    if (vorige && vorige.fotoId !== v.fotoId && !isNaN(genomen.getTime()) && !isNaN(vorige.genomenOm.getTime()) && vorige.genomenOm.getTime() > genomen.getTime()) {
+      return { ok: true, appId: v.appId, soort: v.soort, fotoId: v.fotoId, rij: rij, nieuw: false, verouderd: true };
+    }
+    const naam = [v.datum, veiligeNaam_(v.lijn), veiligeNaam_(v.code), INST.FOTO_NAAM[v.soort], String(v.fotoId).slice(0, 8)].join('_') + '.jpg';
+    const maand = subMap_(fotoMap_(), v.datum.slice(0, 7));
+    // De naam is voor dezelfde foto altijd dezelfde (de tablet stuurt de lijn
+    // van het moment van de foto): een herhaling vindt het bestand terug.
+    const bestaand = maand.getFilesByName(naam);
+    let bestand = null;
+    let nieuw = false;
+    while (!bestand && bestaand.hasNext()) {
+      const b = bestaand.next();
+      if (!b.isTrashed()) bestand = b; // een bestand in de prullenbak telt niet
+    }
+    if (!bestand) {
+      bestand = maand.createFile(Utilities.newBlob(Utilities.base64Decode(v.data), 'image/jpeg', naam));
+      bestand.setDescription('QC Rondgang ' + v.appId + ' ' + v.soort + ' ' + v.fotoId + (isNaN(genomen.getTime()) ? '' : ' ' + genomen.toISOString()));
+      nieuw = true;
+    }
+    // Het bewaren in Drive duurt enkele seconden. Is de rij intussen verschoven
+    // (iemand sorteert of voegt een rij in), dan komt de link er niet in: de
+    // tablet probeert opnieuw en vindt het bestand terug op zijn naam.
+    SpreadsheetApp.flush();
+    if (String(tab.getRange(rij, kol.appId).getValue()) !== v.appId) {
+      return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'Rij ' + rij + ' is verschoven tijdens het bewaren van de foto; opnieuw proberen.' };
+    }
+    const link = SpreadsheetApp.newRichTextValue().setText(INST.FOTO_TEKST[v.soort]).setLinkUrl(bestand.getUrl()).build();
+    cel.setRichTextValue(link);
+    SpreadsheetApp.flush();
+    // Opnieuw genomen: de foto waar de cel eerst naar wees, gaat naar de prullenbak.
+    const oudWeg = vorige && vorige.id !== bestand.getId() ? naarPrullenbak_(vorige) : false;
+    return { ok: true, appId: v.appId, soort: v.soort, fotoId: v.fotoId, rij: rij, nieuw: nieuw, oudWeg: oudWeg };
+  } finally {
+    try { SpreadsheetApp.flush(); } catch (err) { /* de fout zelf is al onderweg */ }
+    slot.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* dagcontrole                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Leest bereiken van een tabblad van de QC-sheet, onopgemaakt: via de Sheets
+ * API als die aanstaat (snel), anders via SpreadsheetApp. Een datum komt als
+ * dagnummer (API) of als Date (SpreadsheetApp); dagNummer_ kent beide.
+ * Lege cellen achteraan een rij kunnen ontbreken: lees ze met cel_.
+ */
+function leesBereiken_(tab, bereiken) {
+  if (typeof Sheets !== 'undefined') {
+    try {
+      const voor = "'" + tab.getName().replace(/'/g, "''") + "'!";
+      const antwoord = Sheets.Spreadsheets.Values.batchGet(SpreadsheetApp.getActiveSpreadsheet().getId(), {
+        ranges: bereiken.map(function (b) { return voor + b; }),
+        valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'SERIAL_NUMBER', majorDimension: 'ROWS'
+      });
+      const uit = (antwoord.valueRanges || []).map(function (vr) { return vr.values || []; });
+      if (uit.length === bereiken.length) return uit;
+    } catch (err) { /* dan via SpreadsheetApp */ }
+  }
+  return bereiken.map(function (b) { return tab.getRange(b).getValues(); });
+}
+
+function cel_(rij, i) {
+  return rij && rij[i] !== undefined && rij[i] !== null ? rij[i] : '';
+}
+
+/** Dagnummer van Sheets (dagen sinds 30-12-1899) voor 'jjjj-mm-dd'. */
+function dagNummerVan_(datum) {
+  const p = datum.split('-').map(Number);
+  return Math.round((Date.UTC(p[0], p[1] - 1, p[2]) - Date.UTC(1899, 11, 30)) / 86400000);
+}
+
+/** Dagnummer van een celwaarde, of null als het geen datum is. */
+function dagNummer_(waarde, tz) {
+  if (typeof waarde === 'number') return Math.floor(waarde);
+  if (Object.prototype.toString.call(waarde) === '[object Date]') return dagNummerVan_(Utilities.formatDate(waarde, tz, 'yyyy-MM-dd'));
+  return null;
+}
+
+/**
+ * De opbouw van een dagtabblad, uitgelezen uit de koprijen.
+ *   werk     : elke kolom met een kop is een controlepunt ("OK" of een tekst);
+ *              de kolom "Controle afgewerkt?" krijgt "Ja".
+ *   magazijn : eerst de metingen, daarna per punt drie kolommen: vakje OK,
+ *              vakje NOK, "Opmerking NOK". Alleen punten met echte
+ *              selectievakjes in de rijen tellen mee.
+ */
+function dagIndeling_(ss, soort) {
+  const tz = ss.getSpreadsheetTimeZone();
+  if (soort === 'werk') {
+    const tab = ss.getSheetByName(INST.TAB_WERK);
+    if (!tab) throw new Error('Tabblad niet gevonden: ' + INST.TAB_WERK);
+    const kop = leesBereiken_(tab, [INST.WERK_KOPRIJ + ':' + INST.WERK_KOPRIJ])[0][0] || [];
+    const punten = [];
+    let klaarKol = 0;
+    kop.forEach(function (h, i) {
+      const tekst = String(h == null ? '' : h).trim();
+      if (i === 0 || !tekst) return;
+      if (/^controleafgewerkt/.test(norm_(tekst))) { klaarKol = i + 1; return; }
+      const regels = tekst.split('\n').map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+      punten.push({ kop: regels[0], hulp: regels.slice(1).join(' · '), kol: i + 1, sleutel: norm_(regels[0]) });
+    });
+    if (!punten.length) throw new Error('Geen controlepunten gevonden in rij ' + INST.WERK_KOPRIJ + ' van "' + INST.TAB_WERK + '".');
+    geenDubbels_(punten, INST.TAB_WERK);
+    if (!klaarKol) throw new Error('Kolom "Controle afgewerkt?" niet gevonden in "' + INST.TAB_WERK + '".');
+    return { soort: soort, tab: tab, tz: tz, eersteRij: INST.WERK_KOPRIJ + 1, metingen: [], punten: punten, klaarKol: klaarKol };
+  }
+  if (soort === 'magazijn') {
+    const tab = ss.getSheetByName(INST.TAB_MAGAZIJN);
+    if (!tab) throw new Error('Tabblad niet gevonden: ' + INST.TAB_MAGAZIJN);
+    const r = INST.MAGAZIJN_KOPRIJ;
+    const eersteRij = r + 2;
+    const gelezen = leesBereiken_(tab, [r + ':' + (r + 1), 'A' + eersteRij + ':B']);
+    const kop = gelezen[0][0] || [];
+    const onder = gelezen[0][1] || [];
+    const metingen = [];
+    const punten = [];
+    let eerstePunt = -1;
+    for (let i = 0; i < onder.length; i++) {
+      if (norm_(onder[i]) !== 'ok' || norm_(onder[i + 1]) !== 'nok') continue;
+      if (eerstePunt === -1) eerstePunt = i;
+      const tekst = String(cel_(kop, i)).replace(/\s+/g, ' ').trim();
+      if (!tekst) continue;
+      if (norm_(cel_(kop, i + 2)).indexOf('opmerking') !== 0) continue;
+      const knip = tekst.indexOf(':');
+      punten.push({
+        kop: tekst, hulp: '', sleutel: norm_(tekst), okKol: i + 1, nokKol: i + 2, opmKol: i + 3,
+        titel: knip > 0 ? tekst.slice(0, knip) : tekst
+      });
+    }
+    for (let i = 1; i < (eerstePunt === -1 ? kop.length : eerstePunt); i++) {
+      const tekst = String(cel_(kop, i)).replace(/\s+/g, ' ').trim();
+      if (tekst) metingen.push({ kop: tekst, sleutel: norm_(tekst), kol: i + 1 });
+    }
+    // Alleen punten met selectievakjes in de rijen: kijk naar de laatste rij met gegevens.
+    const data = gelezen[1];
+    let laatste = -1;
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (cel_(data[i], 0) !== '' || cel_(data[i], 1) !== '') { laatste = i; break; }
+    }
+    const voorbeeldRij = eersteRij + Math.max(laatste, 0);
+    const voorbeeld = leesBereiken_(tab, [voorbeeldRij + ':' + voorbeeldRij])[0][0] || [];
+    const actief = punten.filter(function (p) {
+      return typeof cel_(voorbeeld, p.okKol - 1) === 'boolean' && typeof cel_(voorbeeld, p.nokKol - 1) === 'boolean';
+    });
+    if (!actief.length) throw new Error('Geen controlepunten met selectievakjes gevonden in "' + INST.TAB_MAGAZIJN + '".');
+    geenDubbels_(actief.concat(metingen), INST.TAB_MAGAZIJN);
+    return { soort: soort, tab: tab, tz: tz, eersteRij: eersteRij, metingen: metingen, punten: actief, data: data, laatste: laatste };
+  }
+  throw new Error('Onbekende dagcontrole: ' + soort);
+}
+
+/**
+ * Twee kolommen met dezelfde naam kan de app niet uit elkaar houden: één van de
+ * twee zou stil leeg blijven. Dan liever een duidelijke fout.
+ */
+function geenDubbels_(lijst, tabNaam) {
+  const gezien = {};
+  lijst.forEach(function (p) {
+    if (gezien[p.sleutel]) throw new Error('In "' + tabNaam + '" staan twee kolommen met dezelfde naam: "' + p.kop + '". Geef ze een verschillende naam.');
+    gezien[p.sleutel] = true;
+  });
+}
+
+/** Voegt onderaan een rij toe met formules, validatie en opmaak van de rij erboven, zonder de invoer. */
+function dagRijErbij_(tab) {
+  const boven = tab.getMaxRows();
+  const breedte = tab.getMaxColumns();
+  tab.insertRowsAfter(boven, 1);
+  const doel = boven + 1;
+  tab.getRange(boven, 1, 1, breedte).copyTo(tab.getRange(doel, 1, 1, breedte));
+  const formules = tab.getRange(doel, 1, 1, breedte).getFormulas()[0];
+  const waarden = tab.getRange(doel, 1, 1, breedte).getValues()[0];
+  for (let c = 1; c <= breedte; c++) {
+    if (formules[c - 1]) continue;
+    if (typeof waarden[c - 1] === 'boolean') tab.getRange(doel, c).setValue(false);
+    else tab.getRange(doel, c).clearContent();
+  }
+  return doel;
+}
+
+/**
+ * Schrijft een dagcontrole. De rij wordt gezocht op de datum: opnieuw verzenden
+ * overschrijft dezelfde rij en geeft nooit een dubbel.
+ */
+function dagcontrole_(v) {
+  const fout = function (code, tekst) { return { ok: false, code: code, fout: tekst }; };
+  if (v.soort !== 'werk' && v.soort !== 'magazijn') return fout('VERZOEK', 'Ongeldige dagcontrole.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v.datum || ''))) return fout('VERZOEK', 'Ongeldige datum.');
+  const punten = v.punten || [];
+  const metingen = v.metingen || [];
+  if (!punten.length) return fout('VERZOEK', 'Geen controlepunten ontvangen.');
+  for (let i = 0; i < punten.length; i++) {
+    if (punten[i].ok !== true && !String(punten[i].tekst == null ? '' : punten[i].tekst).trim()) return fout('VERZOEK', 'Opmerking ontbreekt bij "' + punten[i].kop + '".');
+  }
+
+  const slot = LockService.getScriptLock();
+  try {
+    slot.waitLock(INST.WACHT_OP_SLOT_MS);
+  } catch (err) {
+    return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'De sheet is bezet, probeer opnieuw.' };
+  }
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let ind;
+    try { ind = dagIndeling_(ss, v.soort); } catch (err) { return fout('INDELING', err.message); }
+    const tab = ind.tab;
+    const tz = ind.tz;
+
+    // Elk ontvangen punt moet in de sheet bestaan; anders wordt er niets geschreven.
+    const perSleutel = {};
+    ind.punten.forEach(function (p) { perSleutel[p.sleutel] = p; });
+    const meetPerSleutel = {};
+    ind.metingen.forEach(function (m) { meetPerSleutel[m.sleutel] = m; });
+    const onbekend = punten.filter(function (p) { return !perSleutel[norm_(p.kop)]; }).map(function (p) { return p.kop; })
+      .concat(metingen.filter(function (m) { return !meetPerSleutel[norm_(m.kop)]; }).map(function (m) { return m.kop; }));
+    if (onbekend.length) return fout('INDELING', 'Niet gevonden in "' + tab.getName() + '": ' + onbekend.join(' | ') + '. Ververs de gegevens op de tablet.');
+    for (let i = 0; i < metingen.length; i++) {
+      if (isNaN(Number(String(metingen[i].waarde).replace(',', '.'))) || String(metingen[i].waarde).trim() === '') return fout('VERZOEK', 'Geen getal voor "' + metingen[i].kop + '".');
+    }
+
+    // De rij van deze datum, of de eerste rij na de laatste ingevulde.
+    const doel = dagNummerVan_(v.datum);
+    const data = ind.data || leesBereiken_(tab, ['A' + ind.eersteRij + ':B'])[0];
+    let rij = 0;
+    let laatste = -1;
+    for (let i = 0; i < data.length; i++) {
+      const a = cel_(data[i], 0);
+      if (a !== '' || (v.soort === 'magazijn' && cel_(data[i], 1) !== '')) laatste = i;
+      if (!rij && dagNummer_(a, tz) === doel) rij = ind.eersteRij + i;
+    }
+    let nieuw = false;
+    const tijdstip = new Date(v.afgeslotenOm);
+    const datumWaarde = v.soort === 'magazijn' && !isNaN(tijdstip.getTime()) && Utilities.formatDate(tijdstip, tz, 'yyyy-MM-dd') === v.datum
+      ? tijdstip : Utilities.parseDate(v.datum + ' 00:00', tz, 'yyyy-MM-dd HH:mm');
+    if (!rij) {
+      rij = ind.eersteRij + laatste + 1;
+      nieuw = true;
+      if (rij > tab.getMaxRows()) dagRijErbij_(tab);
+      // Rechtstreeks nakijken dat de rij leeg is (zie controle_).
+      const leeg = v.soort === 'magazijn'
+        ? String(tab.getRange(rij, 2).getValue()) === ''
+        : String(tab.getRange(rij, 1).getValue()) === '';
+      if (!leeg) return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'Rij ' + rij + ' bleek niet leeg; opnieuw proberen.' };
+    } else if (dagNummer_(tab.getRange(rij, 1).getValue(), tz) !== doel) {
+      // De rij van deze datum is gevonden in een leesactie van daarnet; staat de
+      // datum er nu niet meer (rij verschoven), dan wordt er niets geschreven.
+      return { ok: false, code: 'BEZET', tijdelijk: true, fout: 'Rij ' + rij + ' is verschoven; opnieuw proberen.' };
+    }
+    if (nieuw || v.soort === 'magazijn') tab.getRange(rij, 1).setValue(datumWaarde);
+
+    metingen.forEach(function (m) {
+      tab.getRange(rij, meetPerSleutel[norm_(m.kop)].kol).setValue(Number(String(m.waarde).replace(',', '.')));
+    });
+
+    if (v.soort === 'werk') {
+      punten.forEach(function (p) {
+        const cel = tab.getRange(rij, perSleutel[norm_(p.kop)].kol);
+        if (p.ok === true) cel.setValue('OK'); else zetTekst_(cel, String(p.tekst).trim());
+      });
+      tab.getRange(rij, ind.klaarKol).setValue('Ja');
+    } else {
+      const formules = tab.getRange(rij, 1, 1, tab.getLastColumn()).getFormulas()[0];
+      punten.forEach(function (p) {
+        const def = perSleutel[norm_(p.kop)];
+        tab.getRange(rij, def.okKol).setValue(p.ok === true);
+        tab.getRange(rij, def.nokKol).setValue(p.ok !== true);
+        const opm = tab.getRange(rij, def.opmKol);
+        if (p.ok === true) {
+          // OK: de formule van de sheet geeft "NVT"; ze komt terug als er een opmerking stond.
+          // De cel kreeg tekstopmaak van zetTekst_; daarin zou de formule als
+          // tekst blijven staan.
+          if (!formules[def.opmKol - 1]) opm.setNumberFormat('General').setFormula('=IF(' + letter_(def.okKol) + rij + ';"NVT";)');
+        } else {
+          zetTekst_(opm, String(p.tekst).trim());
+        }
+      });
+    }
+
+    SpreadsheetApp.flush();
+    return { ok: true, soort: v.soort, datum: v.datum, rij: rij, nieuw: nieuw };
+  } finally {
+    try { SpreadsheetApp.flush(); } catch (err) { /* de fout zelf is al onderweg */ }
+    slot.releaseLock();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -727,6 +1261,12 @@ function installeer() {
     Logger.log('Nieuwe sleutel aangemaakt.');
   }
   Logger.log('SLEUTEL (ingeven op de tablet, niet delen): ' + props.getProperty('SLEUTEL'));
+  try {
+    const map = fotoMap_();
+    Logger.log('Map voor de foto\'s: ' + map.getUrl() + '  -> deel deze map met dezelfde mensen als de sheet.');
+  } catch (err) {
+    Logger.log('FOUT: de map voor de foto\'s kon niet gemaakt worden: ' + err.message);
+  }
   nakijken();
 }
 
@@ -749,9 +1289,16 @@ function nakijken() {
     return;
   }
   Logger.log('Orders: ' + s.orders.length + ' (' + s.bron.orders + '), pallets: ' + s.pallets.length + ' (' + s.bron.pallets + ')');
+  Logger.log('Lijnen waaruit de controleur kiest: ' + s.lijnen.join(', '));
   Object.keys(s.velden).forEach(function (id) {
     const v = s.velden[id];
     Logger.log(v.kolom + '  ' + id + ': ' + v.soort + (v.keuzes.length ? ' [' + v.keuzes.join(' / ') + ']' : ''));
+  });
+  ['werk', 'magazijn'].forEach(function (soort) {
+    const d = s.dag && s.dag[soort];
+    if (!d) return;
+    Logger.log('Dagcontrole ' + soort + ' ("' + d.tab + '"): ' + d.metingen.length + ' metingen, ' + d.punten.length + ' controlepunten');
+    d.punten.forEach(function (p, i) { Logger.log('   ' + (i + 1) + '. ' + p.kop.slice(0, 70)); });
   });
   if (s.waarschuwingen.length) Logger.log('WAARSCHUWINGEN: ' + s.waarschuwingen.join(' | '));
 }
@@ -815,6 +1362,16 @@ function meet() {
 }
 
 /** Maakt een nieuwe sleutel. De oude werkt daarna niet meer. */
+/**
+ * Alleen nodig als de map "QC foto's" definitief verwijderd is: maakt een
+ * nieuwe map en onthoudt die. De links die al in de sheet staan, wijzigen niet.
+ */
+function nieuweFotoMap() {
+  PropertiesService.getScriptProperties().deleteProperty('FOTO_MAP_ID');
+  const map = fotoMap_();
+  Logger.log('Nieuwe map voor de foto\'s: ' + map.getUrl() + '  -> deel deze map met dezelfde mensen als de sheet.');
+}
+
 function nieuweSleutel() {
   const props = PropertiesService.getScriptProperties();
   props.setProperty('SLEUTEL', (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, ''));
