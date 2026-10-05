@@ -43,7 +43,7 @@ const INST = {
   FOTO_MAP: "QC foto's",
   FOTO_TEKST: { zk: 'Foto ZK', etiket: 'Foto etiket', opmerking: 'Foto opmerking' },
   FOTO_NAAM: { zk: 'ZK', etiket: 'etiket', opmerking: 'opmerking' },
-  VERSIE: '2.2.0'
+  VERSIE: '2.3.0'
 };
 
 /**
@@ -112,7 +112,11 @@ const VELDEN = [
   { id: 'gezienLotGrd', deel: 'boven', kop: /^gezien:lotgrd$/, nieuw: 'Gezien: LOT GRD', gezien: 'lotGrd' },
   { id: 'gezienAllergenenBoven', deel: 'boven', kop: /^gezien:allergenen\(boven\)$/, nieuw: 'Gezien: allergenen (boven)', gezien: 'allergenen' },
   // Optionele foto bij een opmerking (NOK). De sheet had er geen kolom voor.
-  { id: 'fotoOpmerking', deel: 'beneden', kop: /^fotoopmerking$/, nieuw: 'Foto opmerking', foto: 'opmerking' }
+  { id: 'fotoOpmerking', deel: 'beneden', kop: /^fotoopmerking$/, nieuw: 'Foto opmerking', foto: 'opmerking' },
+  // Houdbaarheid (THT) zoals de controleur ze zag. Ontbreken deze kolommen nog
+  // (installeer() niet opnieuw uitgevoerd), dan werkt al de rest gewoon door.
+  { id: 'gezienThtZk', deel: 'beneden', kop: /^gezien:thtzk$/, nieuw: 'Gezien: THT ZK', gezien: 'thtZk', optioneel: true },
+  { id: 'gezienThtGrd', deel: 'boven', kop: /^gezien:thtgrd$/, nieuw: 'Gezien: THT GRD', gezien: 'thtGrd', optioneel: true }
 ];
 
 /* ------------------------------------------------------------------ */
@@ -347,7 +351,8 @@ function snapshot_(dwing) {
     kolommen: {
       code: 'prod.code', status: 'status', product: 'klant+product', lijn: 'lijn',
       inhoud: 'inhoudzk', eenheid: 'g/ge/stuks/ml', grondstof: 'grondstof',
-      lotGrd: 'lotgrd', lotZk: 'lotzk', allergenen: 'allergenen'
+      lotGrd: 'lotgrd', lotZk: 'lotzk', allergenen: 'allergenen',
+      thtZk: 'thtzk', thtGrd: 'thtgrd'
     },
     verplicht: ['code', 'status', 'product']
   }, waarschuwingen, dwing);
@@ -356,7 +361,7 @@ function snapshot_(dwing) {
     anker: ['palletnummer', 'toestand'],
     kolommen: {
       code: 'palletnummer', toestand: 'toestand', artikel: 'asnartikelcode',
-      lot: 'asnlotn°', check1: 'check1', allergenen: 'allergenen'
+      lot: 'asnlotn°', check1: 'check1', allergenen: 'allergenen', tht: 'asntht(yymmdd)'
     },
     verplicht: ['code', 'toestand', 'artikel']
   }, waarschuwingen, dwing);
@@ -367,19 +372,23 @@ function snapshot_(dwing) {
     return {
       code: r.code, status: r.status, lijn: r.lijn || '', product: r.product,
       lotZk: r.lotZk || '', inhoud: r.inhoud || '', eenheid: r.eenheid || '',
-      grondstof: r.grondstof || '', lotGrd: r.lotGrd || '', allergenen: r.allergenen || ''
+      grondstof: r.grondstof || '', lotGrd: r.lotGrd || '', allergenen: r.allergenen || '',
+      thtZk: r.thtZk || '', thtGrd: r.thtGrd || ''
     };
   });
 
-  // Een pallet krijgt in de app dezelfde vorm als een order. De QC-sheet zelf
-  // toont voor een pallet: product = artikelcode, lot = asnlotn°, grondstof =
-  // Check1, LOT GRD = asnlotn°.
+  // Een pallet krijgt in de app dezelfde vorm als een order, met dezelfde
+  // waarden als de formules van de QC-sheet (gelezen op 5 oktober 2026):
+  // product = artikelcode, LOT ZK = "Lot: " + asnlotn°, THT ZK = "THT: dd/mm/20jj"
+  // uit asntht (jjmmdd), grondstof = Check1, LOT GRD = asnlotn°. THT GRD blijft
+  // in de sheet leeg voor een pallet, dus hier ook.
   const palletsUit = pallets.rijen.filter(function (r) {
     return r.code && r.artikel && r.toestand && INST.PALLET_UIT.indexOf(r.toestand.toLowerCase()) === -1;
   }).map(function (r) {
     return {
-      code: r.code, toestand: r.toestand, product: r.artikel, lotZk: r.lot || '',
-      grondstof: r.check1 || '', lotGrd: r.lot || '', allergenen: r.allergenen || ''
+      code: r.code, toestand: r.toestand, product: r.artikel, lotZk: r.lot ? 'Lot: ' + r.lot : '',
+      grondstof: r.check1 || '', lotGrd: r.lot || '', allergenen: r.allergenen || '',
+      thtZk: palletTht_(r.tht), thtGrd: ''
     };
   });
 
@@ -416,6 +425,14 @@ function snapshot_(dwing) {
     bron: { orders: orders.bron, pallets: pallets.bron },
     waarschuwingen: waarschuwingen
   };
+}
+
+/** THT van een pallet zoals de QC-sheet ze toont: jjmmdd wordt "THT: dd/mm/20jj". */
+function palletTht_(waarde) {
+  const cijfers = String(waarde == null ? '' : waarde).replace(/\D/g, '');
+  if (!cijfers) return '';
+  const d = ('000000' + cijfers).slice(-6);
+  return 'THT: ' + d.slice(4, 6) + '/' + d.slice(2, 4) + '/20' + d.slice(0, 2);
 }
 
 /**
@@ -707,7 +724,7 @@ function controle_(v) {
 
     // Wat de controleur zag.
     VELDEN.forEach(function (veld) {
-      if (veld.deel !== v.deel || !veld.gezien) return;
+      if (veld.deel !== v.deel || !veld.gezien || !kol[veld.id]) return;
       const cel = tab.getRange(rij, kol[veld.id]);
       const tekst = v.gezien ? v.gezien[veld.gezien] : '';
       if (tekst) zetTekst_(cel, tekst); else cel.clearContent();

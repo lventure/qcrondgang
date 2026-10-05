@@ -16,9 +16,9 @@ const QC_KOPPEN = {
   AE: 'ZK: folie - inkjet - zijlassen - inkeping', AF: 'DI: type - inkjet - sluiting', AG: 'DS/pallet: Type - Staat - Stapeling - Palletblad',
   AH: 'Etiket: Type - Lees- / scanbaar', AI: 'Documenten: Voorblad - Gewichtsfiche - (folie)lotnummer',
   AJ: 'Allergenenbeleid & vreemde voorwerpen: Line clearance - Vreemde voorwerpen (werk- & poetsmateriaal, folie), lassenkuiser, hygiëne operator',
-  AK: 'Foto ZK & Gewichtsfiche', AL: 'Foto etiket (indien achteraan)', AN: 'Grondstof', AO: 'LOT GRD', AP: 'GRD correct?', AQ: 'Allergenen',
+  AK: 'Foto ZK & Gewichtsfiche', AL: 'Foto etiket (indien achteraan)', AM: 'THT ZK', AN: 'Grondstof', AO: 'LOT GRD', AP: 'GRD correct?', AQ: 'Allergenen',
   AR: 'Allergenetiket aanwezig en correct?', AS: 'Trechter + mes?', AT: 'Gesloten circuits - Orde en netheid - Spillage', AU: 'Opmerkingen boven',
-  AV: 'Grondstof & Zakje verschillend lot?', AW: 'Allergenen gelijk?'
+  AV: 'Grondstof & Zakje verschillend lot?', AW: 'Allergenen gelijk?', AX: 'THT GRD'
 };
 
 const TAB_WERK = 'Rondgang Werkmaterialen Boven';
@@ -54,7 +54,7 @@ const JA_NEE = ['JA', 'NEE'];
 const OK3 = ['OK', 'NOK', 'NVT'];
 const OK4 = ['OK', 'NOK', 'NVT', 'STOP'];
 const TRECHTERS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
-const FORMULE_KOLOMMEN = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'O', 'P', 'AN', 'AO', 'AQ'];
+const FORMULE_KOLOMMEN = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'O', 'P', 'AM', 'AN', 'AO', 'AQ', 'AX'];
 
 /** Een voorbereide lege rij: formules, selectievakjes en keuzelijsten, zoals in de sheet. */
 function bereidRijVoor(tab, r) {
@@ -95,44 +95,44 @@ function maakFixture({ legeRijen = 3 } = {}) {
 
   // --- bron: productielijst (koppen in rij 2, zoals de echte)
   const prod = new NepSpreadsheet('Productielijst (nep)');
-  const pTab = prod.nieuwTab('Productielijst', 40, 12);
+  const pTab = prod.nieuwTab('Productielijst', 40, 16);
   ['', '', '', '', '', 'Klant + Product', 'in te vullen', '', 'Inhoud ZK', 'g/ge/stuks/mL', 'LOT ZK', ''].forEach((k, i) => { pTab.cel(1, i + 1, true).v = k; });
   vulTabel(pTab, 2,
-    ['Nr', 'Prod.Code', 'Status', 'Klant + Product', 'Lijn', 'Inhoud ZK', 'g/ge/stuks/mL', 'Grondstof', 'LOT GRD', 'Gewenst LOT ZK', 'LOT ZK', 'Allergenen'],
+    ['Nr', 'Prod.Code', 'Status', 'Klant + Product', 'Lijn', 'Inhoud ZK', 'g/ge/stuks/mL', 'Grondstof', 'LOT GRD', 'Gewenst LOT ZK', 'LOT ZK', 'Allergenen', 'THT GRD', 'Gewenste THT', 'Opmaak THT ZK', 'THT ZK'],
     [
-      [1, 260001, 'Klaar', 'Testklant Kruidenmix 20g', 'L4', 20, 'g', 'Kruidenmix A', '111111', '', 'LOT: 2600000001', 'Geen Allergenen'],
-      [2, 260002, 'Klaar', 'Testklant Saus 10ml', 'L6', 10, 'mL', 'Saus B', '222222', '', 'LOT: 2600000002', 'mosterd'],
-      [3, 260101, 'In productie', 'Voorbeeld Energiegel 40g', 'GELPACK 1', 40, 'g', 'Gelbasis C', '333333', '', 'LOT: 2600000101', 'Geen Allergenen'],
-      [4, 260102, 'In productie', 'Voorbeeld Proteïne 100ge', 'L8', 100, 'ge', 'Proteïnepoeder D', '444444', '', 'LOT: 2600000102', 'melk - soja'],
-      [5, 260103, 'Klaar voor productie', 'Voorbeeld Suikersticks 5g', 'STICKS', 5, 'g', 'Suiker E', '555555', '', 'LOT: 2600000103', 'Geen Allergenen'],
-      [6, 260104, 'Onvolledig', 'Voorbeeld Notenmix 30g', 'L7', 30, 'g', 'Notenmix F', '666666', '', 'LOT: 2600000104', 'gluten - pinda'],
-      [7, 260105, 'KLAAR', 'Voorbeeld Afgewerkt 15g', 'L4', 15, 'g', 'Poeder G', '777777', '', 'LOT: 2600000105', ''],
-      [8, 260106, '', '', '#N/A', '', '', '', '', '', '', ''],
-      [9, 260107, 'In productie', 'Voorbeeld Zonder lijn 8g', '#N/A', 8, 'g', 'Poeder H', '888888', '', 'LOT: 2600000107', 'selderij']
+      [1, 260001, 'Klaar', 'Testklant Kruidenmix 20g', 'L4', 20, 'g', 'Kruidenmix A', '111111', '', 'LOT: 2600000001', 'Geen Allergenen', '31/12/2026', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', 'THT: 12/2027'],
+      [2, 260002, 'Klaar', 'Testklant Saus 10ml', 'L6', 10, 'mL', 'Saus B', '222222', '', 'LOT: 2600000002', 'mosterd', '30/06/2027', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', 'THT: 06/2028'],
+      [3, 260101, 'In productie', 'Voorbeeld Energiegel 40g', 'GELPACK 1', 40, 'g', 'Gelbasis C', '333333', '', 'LOT: 2600000101', 'Geen Allergenen', '15/01/2028', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', 'EXP: 15/07/2028'],
+      [4, 260102, 'In productie', 'Voorbeeld Proteïne 100ge', 'L8', 100, 'ge', 'Proteïnepoeder D', '444444', '', 'LOT: 2600000102', 'melk - soja', '30/9/2028', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', 'THT: 30/09/2028'],
+      [5, 260103, 'Klaar voor productie', 'Voorbeeld Suikersticks 5g', 'STICKS', 5, 'g', 'Suiker E', '555555', '', 'LOT: 2600000103', 'Geen Allergenen', '03/2028 - 05/2028', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', '1/8/2029'],
+      [6, 260104, 'Onvolledig', 'Voorbeeld Notenmix 30g', 'L7', 30, 'g', 'Notenmix F', '666666', '', 'LOT: 2600000104', 'gluten - pinda', '', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', 'THT: 03-2028'],
+      [7, 260105, 'KLAAR', 'Voorbeeld Afgewerkt 15g', 'L4', 15, 'g', 'Poeder G', '777777', '', 'LOT: 2600000105', '', '', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', ''],
+      [8, 260106, '', '', '#N/A', '', '', '', '', '', '', '', '', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', ''],
+      [9, 260107, 'In productie', 'Voorbeeld Zonder lijn 8g', '#N/A', 8, 'g', 'Poeder H', '888888', '', 'LOT: 2600000107', 'selderij', '10/10/2026', 'dd/mm/jjjj', 'THT: dd/mm/jjjj', '']
     ]);
 
   // --- bron: pocolist (koppen in rij 1)
   const poco = new NepSpreadsheet('Pocolist (nep)');
-  const cTab = poco.nieuwTab('pocolist', 40, 8);
+  const cTab = poco.nieuwTab('pocolist', 40, 9);
   vulTabel(cTab, 1,
-    ['', 'Palletnummer', 'asnartikelcode', 'asnlotn°', 'Toestand', 'Check1', 'Allergenen', 'Soort pallet'],
+    ['', 'Palletnummer', 'asnartikelcode', 'asnlotn°', 'Toestand', 'Check1', 'Allergenen', 'Soort pallet', 'asntht (yymmdd)'],
     [
-      [1, 50001, 'ART TACO 30X30G', 439001, 'PALL. BL. VOORHAND.', 'KRUIDENMIX TACO 01', 'Geen Allergenen boven', 'Euro'],
-      [2, 50002, 'ART GUA 40X20G', 439002, 'ONVOLL. PALLET', 'KRUIDENMIX GUA 02', 'mosterd', 'Euro'],
-      [3, 50003, 'ART FAJ 25X30G', 439003, 'KLAAR', 'KRUIDENMIX FAJ 03', '', 'Euro'],
-      [4, 50004, 'ART BUR 25X30G', 439004, 'KLAAR AX', 'KRUIDENMIX BUR 04', '', 'Euro'],
-      [5, 50005, 'ART CHI 25X30G', 439005, 'Shipped', 'KRUIDENMIX CHI 05', '', 'Euro'],
-      [6, 50006, 'ART NAC 25X30G', 439006, 'Wachten Klaar', 'KRUIDENMIX NAC 06', '', 'Euro'],
-      [7, 50007, 'ART SAL 25X30G', 439007, '', 'KRUIDENMIX SAL 07', '', 'Euro'],
-      [8, 50008, 'ART ENC 25X30G', 439008, 'VERNIETIGD', 'KRUIDENMIX ENC 08', '', 'Euro'],
-      [9, 50009, 'ART QUE 25X30G', 439009, 'niet gebruikt', 'KRUIDENMIX QUE 09', '', 'Euro'],
-      [10, 50010, '', '', 'Wachten', '', '', '']
+      [1, 50001, 'ART TACO 30X30G', 439001, 'PALL. BL. VOORHAND.', 'KRUIDENMIX TACO 01', 'Geen Allergenen boven', 'Euro', 271217],
+      [2, 50002, 'ART GUA 40X20G', 439002, 'ONVOLL. PALLET', 'KRUIDENMIX GUA 02', 'mosterd', 'Euro', 280101],
+      [3, 50003, 'ART FAJ 25X30G', 439003, 'KLAAR', 'KRUIDENMIX FAJ 03', '', 'Euro', 271225],
+      [4, 50004, 'ART BUR 25X30G', 439004, 'KLAAR AX', 'KRUIDENMIX BUR 04', '', 'Euro', 271222],
+      [5, 50005, 'ART CHI 25X30G', 439005, 'Shipped', 'KRUIDENMIX CHI 05', '', 'Euro', 271224],
+      [6, 50006, 'ART NAC 25X30G', 439006, 'Wachten Klaar', 'KRUIDENMIX NAC 06', '', 'Euro', 271228],
+      [7, 50007, 'ART SAL 25X30G', 439007, '', 'KRUIDENMIX SAL 07', '', 'Euro', 280102],
+      [8, 50008, 'ART ENC 25X30G', 439008, 'VERNIETIGD', 'KRUIDENMIX ENC 08', '', 'Euro', 271201],
+      [9, 50009, 'ART QUE 25X30G', 439009, 'niet gebruikt', 'KRUIDENMIX QUE 09', '', 'Euro', 271202],
+      [10, 50010, '', '', 'Wachten', '', '', '', '']
     ]);
 
   // --- importtabbladen in de QC-sheet: alleen de IMPORTRANGE-formule telt
-  const imp1 = qc.nieuwTab('ImportProductielijst', 40, 13);
+  const imp1 = qc.nieuwTab('ImportProductielijst', 40, 17);
   imp1.cel(1, 2, true).f = `=IMPORTRANGE("${ID_PROD}";"Productielijst!A:Cd")`;
-  const imp2 = qc.nieuwTab('poco list', 40, 8);
+  const imp2 = qc.nieuwTab('poco list', 40, 9);
   imp2.cel(1, 1, true).f = `=IMPORTRANGE("https://docs.google.com/spreadsheets/d/${ID_POCO}/edit";"pocolist!1:6000")`;
 
   // --- dagtabblad 1: Rondgang Werkmaterialen Boven (één rij per kalenderdag, datums vooraf ingevuld)

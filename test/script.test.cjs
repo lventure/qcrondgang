@@ -32,33 +32,48 @@ const BENEDEN = { deel: 'beneden', datum: '2026-10-02', code: '260102', afgeslot
 
 console.log('Apps Script tegen de nagebootste sheet');
 
-test('installeer voegt 11 kolommen toe vanaf AY en maakt een sleutel', () => {
+test('installeer voegt 13 kolommen toe vanaf AY en maakt een sleutel', () => {
   const { fx, sleutel, script } = opzet();
-  assert.strictEqual(fx.tab.getMaxColumns(), 61);
+  assert.strictEqual(fx.tab.getMaxColumns(), 63);
   assert.strictEqual(fx.tab.cel(2, 51).v, 'App-ID');
   assert.strictEqual(fx.tab.cel(2, 60).v, 'Gezien: allergenen (boven)');
   assert.strictEqual(fx.tab.cel(2, 61).v, 'Foto opmerking');
+  assert.deepStrictEqual([fx.tab.cel(2, 62).v, fx.tab.cel(2, 63).v], ['Gezien: THT ZK', 'Gezien: THT GRD']);
   assert.ok(/^[0-9a-f]{64}$/.test(sleutel));
   script.roep('installeer'); // tweede keer: niets erbij, zelfde sleutel
-  assert.strictEqual(fx.tab.getMaxColumns(), 61);
+  assert.strictEqual(fx.tab.getMaxColumns(), 63);
   assert.strictEqual(script.props.SLEUTEL, sleutel);
 });
 
-test('een sheet die de kolommen van fase 1 al heeft, krijgt alleen "Foto opmerking" erbij', () => {
+test('een sheet met alleen de kolommen van fase 1: "Foto opmerking" is verplicht, de THT-kolommen niet; installeer() voegt ze alle drie toe', () => {
   const fx = maakFixture();
   const script = laadScript({ actief: fx.qc, opId: fx.opId });
   script.roep('installeer');
-  // terug naar de toestand van fase 1: de laatste kolom bestaat nog niet
-  for (const k of [...fx.tab.cellen.keys()]) if (k.endsWith(',61')) fx.tab.cellen.delete(k);
-  fx.tab.maxKolommen = 60;
-  const a = script.post({ sleutel: script.props.SLEUTEL, actie: 'controle', appId: ID1, ...BENEDEN });
-  assert.strictEqual(a.code, 'INDELING', 'zonder installeer() weigert het script te schrijven en zegt het welke kolom ontbreekt');
-  assert.ok(/Foto opmerking/i.test(a.fout), a.fout);
+  const post = (obj) => script.post({ sleutel: script.props.SLEUTEL, ...obj });
+  const weg = (vanaf) => { for (const k of [...fx.tab.cellen.keys()]) if (Number(k.split(',')[1]) >= vanaf) fx.tab.cellen.delete(k); fx.tab.maxKolommen = vanaf - 1; };
+  // zoals na script 2.2: "Foto opmerking" bestaat, de twee kolommen "Gezien: THT" nog niet
+  weg(62);
+  const gezien = { product: 'Voorbeeld Proteïne 100ge', lotZk: 'LOT: 2600000102', thtZk: 'THT: 30/09/2028', allergenen: 'melk - soja' };
+  const a = post({ actie: 'controle', appId: ID1, ...BENEDEN, gezien });
+  assert.strictEqual(a.ok, true, 'zonder de THT-kolommen werkt het script gewoon door: ' + a.fout);
+  assert.strictEqual(fx.tab.waarde(5, 56), 'LOT: 2600000102');
+  assert.deepStrictEqual(post({ actie: 'snapshot' }).waarschuwingen, []);
+  // terug naar de toestand van fase 1: ook "Foto opmerking" bestaat nog niet
+  weg(61);
+  const b = post({ actie: 'controle', appId: ID2, ...BENEDEN, code: '260103' });
+  assert.strictEqual(b.code, 'INDELING', 'zonder installeer() weigert het script te schrijven en zegt het welke kolom ontbreekt');
+  assert.ok(/Foto opmerking/i.test(b.fout), b.fout);
   script.logboek.length = 0;
   script.roep('installeer');
-  assert.strictEqual(fx.tab.getMaxColumns(), 61);
-  assert.ok(script.logboek.some((l) => /Toegevoegd vanaf kolom BI: Foto opmerking/.test(l)), script.logboek.join('\n'));
-  assert.strictEqual(script.post({ sleutel: script.props.SLEUTEL, actie: 'controle', appId: ID1, ...BENEDEN }).ok, true);
+  assert.strictEqual(fx.tab.getMaxColumns(), 63);
+  assert.ok(script.logboek.some((l) => /Toegevoegd vanaf kolom BI: Foto opmerking, Gezien: THT ZK, Gezien: THT GRD/.test(l)), script.logboek.join('\n'));
+  // nu komt ook de THT die de controleur zag in de rij, bij het juiste deel
+  post({ actie: 'controle', appId: ID1, ...BENEDEN, afgeslotenOm: '2026-10-02T09:50:00.000Z', gezien });
+  post({ actie: 'controle', appId: ID1, ...BOVEN, gezien: { ...BOVEN.gezien, thtGrd: '30/9/2028' } });
+  assert.deepStrictEqual([fx.tab.waarde(5, 62), fx.tab.waarde(5, 63)], ['THT: 30/09/2028', '30/9/2028']);
+  // een oudere versie van de app stuurt geen THT mee: de cel wordt leeg, niets anders verandert
+  post({ actie: 'controle', appId: ID1, ...BENEDEN, afgeslotenOm: '2026-10-02T09:55:00.000Z' });
+  assert.deepStrictEqual([fx.tab.waarde(5, 62), fx.tab.waarde(5, 63), fx.tab.waarde(5, 56)], ['', '30/9/2028', 'LOT: 2600000102']);
 });
 
 test('lijn: de keuze van de controleur vervangt de formule van de sheet in die rij; zonder keuze blijft de formule', () => {
@@ -152,7 +167,7 @@ test('snapshot: orders volgens de statusregels', () => {
   const s = opzet().post({ actie: 'snapshot' });
   assert.strictEqual(s.ok, true);
   assert.deepStrictEqual(s.orders.map((o) => o.code), ['260101', '260102', '260103', '260104', '260107']);
-  assert.deepStrictEqual(s.orders[1], { code: '260102', status: 'In productie', lijn: 'L8', product: 'Voorbeeld Proteïne 100ge', lotZk: 'LOT: 2600000102', inhoud: '100', eenheid: 'ge', grondstof: 'Proteïnepoeder D', lotGrd: '444444', allergenen: 'melk - soja' });
+  assert.deepStrictEqual(s.orders[1], { code: '260102', status: 'In productie', lijn: 'L8', product: 'Voorbeeld Proteïne 100ge', lotZk: 'LOT: 2600000102', inhoud: '100', eenheid: 'ge', grondstof: 'Proteïnepoeder D', lotGrd: '444444', allergenen: 'melk - soja', thtZk: 'THT: 30/09/2028', thtGrd: '30/9/2028' });
   assert.strictEqual(s.orders[4].lijn, '', '#N/A wordt leeg');
   assert.deepStrictEqual(s.bron, { orders: 'rechtstreeks', pallets: 'rechtstreeks' });
   assert.deepStrictEqual(s.waarschuwingen, []);
@@ -161,7 +176,25 @@ test('snapshot: orders volgens de statusregels', () => {
 test('snapshot: pallets volgens de toestandsregels', () => {
   const s = opzet().post({ actie: 'snapshot' });
   assert.deepStrictEqual(s.pallets.map((p) => p.code), ['50001', '50002', '50004', '50006']);
-  assert.deepStrictEqual(s.pallets[0], { code: '50001', toestand: 'PALL. BL. VOORHAND.', product: 'ART TACO 30X30G', lotZk: '439001', grondstof: 'KRUIDENMIX TACO 01', lotGrd: '439001', allergenen: 'Geen Allergenen boven' });
+  // dezelfde waarden als de formules van de sheet: "Lot: " voor het lot, de THT uit jjmmdd, en geen THT GRD
+  assert.deepStrictEqual(s.pallets[0], { code: '50001', toestand: 'PALL. BL. VOORHAND.', product: 'ART TACO 30X30G', lotZk: 'Lot: 439001', grondstof: 'KRUIDENMIX TACO 01', lotGrd: '439001', allergenen: 'Geen Allergenen boven', thtZk: 'THT: 17/12/2027', thtGrd: '' });
+  assert.deepStrictEqual(s.pallets.map((p) => p.thtZk), ['THT: 17/12/2027', 'THT: 01/01/2028', 'THT: 22/12/2027', 'THT: 28/12/2027']);
+});
+
+test('snapshot: THT ZK en THT GRD van een order zoals ze in de productielijst staan; een bron zonder die kolommen geeft een waarschuwing, geen fout', () => {
+  const { fx, post } = opzet();
+  const s = post({ actie: 'snapshot' });
+  const per = Object.fromEntries(s.orders.map((o) => [o.code, [o.thtZk, o.thtGrd]]));
+  assert.deepStrictEqual(per, { 260101: ['EXP: 15/07/2028', '15/01/2028'], 260102: ['THT: 30/09/2028', '30/9/2028'], 260103: ['1/8/2029', '03/2028 - 05/2028'], 260104: ['THT: 03-2028', ''], 260107: ['', '10/10/2026'] });
+  // "Opmaak THT ZK" en "Gewenste THT" zijn andere kolommen en worden nooit verward met "THT ZK"
+  assert.ok(s.orders.every((o) => !/jjjj/.test(o.thtZk + o.thtGrd)));
+  // de kolommen bestaan (nog) niet in de bron
+  for (const x of fx.pTab.cellen.values()) if (x.v === 'THT ZK' || x.v === 'THT GRD') x.v = 'iets anders';
+  for (const x of fx.cTab.cellen.values()) if (x.v === 'asntht (yymmdd)') x.v = 'tht';
+  const t = post({ actie: 'snapshot' });
+  assert.strictEqual(t.ok, true);
+  assert.deepStrictEqual([t.orders.length, t.orders[1].thtZk, t.orders[1].thtGrd, t.pallets[0].thtZk, t.pallets[0].lotZk], [5, '', '', '', 'Lot: 439001']);
+  assert.strictEqual(t.waarschuwingen.filter((w) => /niet gevonden; dat veld blijft leeg/.test(w)).length, 3, t.waarschuwingen.join(' | '));
 });
 
 test('snapshot: keuzelijsten komen uit de gegevensvalidatie van de sheet', () => {
@@ -438,7 +471,7 @@ test('met de Sheets API: zelfde snapshot, zonder de bronsheets te openen', () =>
   assert.deepStrictEqual(s.velden, gewoon.velden);
   assert.deepStrictEqual(s.waarschuwingen, []);
   assert.strictEqual(script.teller.openById, 0, 'geen enkele bronsheet geopend');
-  assert.strictEqual(script.teller.api, 1 + 10 + 1 + 6 + 2 + 1 + 3, 'per bron de koprijen en de nodige kolommen, twee kolommen van het QC-tabblad en vier bereiken van de dagtabbladen');
+  assert.strictEqual(script.teller.api, 1 + 12 + 1 + 7 + 2 + 1 + 3, 'per bron de koprijen en de nodige kolommen, twee kolommen van het QC-tabblad en vier bereiken van de dagtabbladen');
 });
 
 test('Sheets API zonder toegang: de tragere weg neemt over en de app krijgt een waarschuwing', () => {

@@ -293,3 +293,8 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .dag-binnen .keuze { flex: none; min-height: 48px; padding: 4px 10px; font-size: .88rem; border-radius: 9px; }
 .dag-tegel.open { border: 3px solid var(--nok); }
 .dag-slot { max-width: 520px; margin: 8px auto 0; }
+
+/* ---------- Magazijn en bufferzone op één scherm: NOK toont de opmerking onder de regel ---------- */
+.punt.regel.met-tekst { flex-wrap: wrap; }
+.punt.regel.met-tekst > textarea.invoer { flex: 1 1 100%; min-height: 50px; margin: 1px 4px 4px 0; padding: 4px 10px; border-radius: 9px; }
+.deel-raster[data-deel="dag"] .punt.regel .keuze { min-width: 66px; }

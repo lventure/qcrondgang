@@ -864,6 +864,45 @@ async function scenario(naam, fn) {
     await page.waitForSelector('#foto-groot', { state: 'detached' });
   });
 
+  await scenario('THT ZK en THT GRD: getoond naast het lot, bij Beneden ook in het blok van Boven, en bewaard in "Gezien: THT"; een oudere controle wordt aangevuld zonder melding', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    const opzoek = (veld) => page.textContent(`#kop-controle dd[data-opzoek="${veld}"]`);
+    const namen = () => page.$$eval('#kop-controle dt', (els) => els.map((e) => e.textContent));
+    await begin(page, '260102', 'boven');
+    assert.deepStrictEqual(await namen(), ['Grondstof', 'LOT GRD', 'THT GRD', 'Allergenen'], 'THT GRD staat direct na LOT GRD');
+    assert.strictEqual(await opzoek('thtGrd'), '30/9/2028');
+    await vulBoven(page);
+    await allesVerzonden(page);
+    assert.deepStrictEqual([w(5, 'BG'), w(5, 'BK')], ['444444', '30/9/2028'], 'Gezien: LOT GRD en Gezien: THT GRD');
+    await page.click('#open-beneden');
+    await page.waitForSelector('#verder');
+    assert.deepStrictEqual(await namen(), ['Product', 'LOT ZK', 'THT ZK', 'Allergenen']);
+    assert.strictEqual(await opzoek('thtZk'), 'THT: 30/09/2028');
+    assert.match(await page.textContent('#blok-boven'), /LOT GRD444444THT GRD30\/9\/2028/);
+    await vulBeneden(page);
+    await allesVerzonden(page, 30000);
+    assert.deepStrictEqual([w(5, 'BD'), w(5, 'BJ'), w(5, 'BK')], ['LOT: 2600000102', 'THT: 30/09/2028', '30/9/2028']);
+    // een pallet: dezelfde waarden als de formules van de sheet
+    await begin(page, '50001', 'beneden', { tab: 'pallet' });
+    assert.deepStrictEqual([await opzoek('lotZk'), await opzoek('thtZk')], ['Lot: 439001', 'THT: 17/12/2027']);
+    // een open controle van voor deze versie kent de THT nog niet: verversen vult ze aan, zonder "gegevens gewijzigd"
+    await begin(page, '260103', 'boven');
+    await opslag(page, async (db, vraag) => {
+      const os = db.transaction('controles', 'readwrite').objectStore('controles');
+      const c = (await vraag(os.getAll())).find((x) => x.code === '260103');
+      delete c.opzoek.thtZk; delete c.opzoek.thtGrd;
+      await vraag(os.put(c));
+    });
+    await page.reload();
+    await page.waitForSelector('#verder');
+    assert.strictEqual(await opzoek('thtGrd'), '—');
+    await page.click('#ververs');
+    await page.waitForFunction(() => /Gegevens ververst/.test((document.querySelector('#melding') || {}).textContent || ''));
+    assert.strictEqual(await opzoek('thtGrd'), '03/2028 - 05/2028');
+    assert.strictEqual(await bestaat(page, '#wijziging'), false);
+  });
+
   await scenario('lijn: nooit vooraf ingevuld en nooit een combinatie uit de productielijst; verplicht om af te sluiten; de keuze blijft en komt in kolom B', async (ctx) => {
     // In de productielijst staat bij één order een combinatie, omdat de lijn nog niet vastlag.
     for (const x of srv.staat.fx.pTab.cellen.values()) if (x.v === 'L7') x.v = 'L1, L3, L5';
@@ -1098,26 +1137,38 @@ async function scenario(naam, fn) {
     assert.strictEqual(acties('dagcontrole'), 2);
   });
 
-  await scenario('magazijn en bufferzone: metingen, OK of NOK met opmerking, eerste vrije rij, opnieuw verzenden geeft geen dubbel', async (ctx) => {
+  await scenario('magazijn en bufferzone: metingen en alle punten op één scherm, OK of NOK met opmerking, eerste vrije rij, opnieuw verzenden geeft geen dubbel', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);
     const mw = (r, l) => srv.staat.fx.mag.waarde(r, letterNaarKolom(l));
+    const actief = MAGAZIJN_PUNTEN.filter((p) => p.actief).map((p) => p.kop);
     await page.click('#tegel-magazijn');
     await page.waitForSelector('#verder');
-    assert.deepStrictEqual(await page.$$eval('section[data-meting] h3', (els) => els.map((e) => e.textContent)), ['Temperatuur magazijn (in C°)', 'Temperatuur Koelkast eetzaal', 'Luchtvochtigheid magazijn (in %)20,7']);
+    // alles op één scherm: de drie metingen en elk punt met selectievakjes; niets vooraf ingevuld
+    assert.deepStrictEqual(await page.$$eval('#dag section[data-meting] h3', (els) => els.map((e) => e.textContent)), ['Temperatuur magazijn (in C°)', 'Temperatuur Koelkast eetzaal', 'Luchtvochtigheid magazijn (in %)20,7']);
+    assert.deepStrictEqual(await page.$$eval('#dag section[data-punt]', (els) => els.map((e) => e.dataset.punt)), actief, 'het punt zonder selectievakjes wordt niet gevraagd');
+    assert.strictEqual(await bestaat(page, '#dag .gekozen'), false);
+    assert.strictEqual(await bestaat(page, '#vorige'), false);
+    const hash = await page.evaluate(() => location.hash);
     await page.click('#verder');
     await page.waitForSelector('#open-melding');
-    assert.strictEqual(await page.$$eval('.punt.open', (e) => e.length), 3);
+    assert.strictEqual(await page.$$eval('.punt.open', (e) => e.length), 3 + actief.length);
     await page.fill('[data-invoer="meting-0"]', '21,5');
     await page.fill('[data-invoer="meting-1"]', '3');
     await page.fill('[data-invoer="meting-2"]', 'warm');
+    // NOK zonder opmerking blijft open; de andere punten OK
+    await vulDagScherm(page, { [MAGAZIJN_PUNTEN[1].kop]: '' });
     await page.click('#verder');
-    await page.waitForFunction(() => document.querySelectorAll('.punt.open').length === 1); // opnieuw getekend: alleen de foute meting is nog open
-    await page.waitForSelector('.punt.open[data-meting="Luchtvochtigheid magazijn (in %)20,7"]');
+    await page.waitForFunction(() => document.querySelectorAll('.punt.open').length === 2); // opnieuw getekend: de foute meting en de NOK zonder opmerking
+    assert.deepStrictEqual(await page.$$eval('.punt.open', (els) => els.map((e) => e.dataset.meting || e.dataset.punt)), ['Luchtvochtigheid magazijn (in %)20,7', MAGAZIJN_PUNTEN[1].kop]);
+    assert.strictEqual(await page.evaluate(() => location.hash), hash, 'nog op hetzelfde scherm');
+    assert.strictEqual(acties('dagcontrole'), 0);
     await page.fill('[data-invoer="meting-2"]', '48');
-    await verder(page);
-    const koppen = await vulDagScherm(page, { [MAGAZIJN_PUNTEN[1].kop]: 'heftruck lekt olie' });
-    assert.deepStrictEqual(koppen, MAGAZIJN_PUNTEN.filter((p) => p.actief).map((p) => p.kop), 'het punt zonder selectievakjes wordt niet gevraagd');
+    await page.fill(`section[data-punt="${MAGAZIJN_PUNTEN[1].kop}"] textarea`, 'heftruck lekt olie');
+    await page.reload(); // alles was al bewaard
+    await page.waitForSelector('#verder');
+    assert.strictEqual(await page.inputValue('[data-invoer="meting-0"]'), '21,5');
+    assert.strictEqual(await page.inputValue(`section[data-punt="${MAGAZIJN_PUNTEN[1].kop}"] textarea`), 'heftruck lekt olie');
     srv.staat.verliesActie = 'dagcontrole';
     srv.staat.verlies = 1;
     await verder(page);

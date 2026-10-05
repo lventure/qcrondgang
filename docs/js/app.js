@@ -459,6 +459,7 @@ function blokBoven(c) {
     h('dl', { class: 'opzoek' },
       regel('Grondstof', gezien.grondstof || '—'),
       regel('LOT GRD', gezien.lotGrd || '—'),
+      regel('THT GRD', gezien.thtGrd || '—'),
       regel(M.label('grdCorrect', snapshot), toonAntwoord('grdCorrect', b.antwoorden)),
       regel('Allergenen', gezien.allergenen || '—'),
       regel(M.label('allergeenEtiket', snapshot), toonAntwoord('allergeenEtiket', b.antwoorden)),
@@ -1009,17 +1010,20 @@ function dagTitel(soort, p) {
   return knip > 0 ? [p.kop.slice(0, knip), p.kop.slice(knip + 1).trim()] : [p.kop, ''];
 }
 
+/** Eén punt van Magazijn en bufferzone als een regel: links de naam, rechts OK of NOK; bij NOK een opmerking eronder. */
 function dagPunt(soort, dc, p, sleutel, open) {
   const a = dc.antwoorden[p.kop];
+  const nok = !!a && a.ok === false;
   const [okTekst, andersTekst] = M.DAGKEUZE[soort];
   const [titel, hulp] = dagTitel(soort, p);
-  const el = h('section', { class: `punt${open ? ' open' : ''}`, 'data-punt': p.kop }, h('h3', {}, titel), hulp ? h('p', { class: 'hulp' }, hulp) : null);
-  el.append(h('div', { class: 'keuzes' },
-    h('button', { class: `keuze k-ok${a && a.ok === true ? ' gekozen' : ''}`, 'data-waarde': 'ok', onclick: () => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: true }; }) }, okTekst),
-    h('button', { class: `keuze ${soort === 'magazijn' ? 'k-nok' : 'k-opm'}${a && a.ok === false ? ' gekozen' : ''}`, 'data-waarde': 'anders',
-      onclick: () => bewaarDag(soort, dc.datum, (x) => { const oud = x.antwoorden[p.kop]; x.antwoorden[p.kop] = { ok: false, tekst: oud && oud.ok === false ? oud.tekst : '' }; }) }, andersTekst)));
-  if (a && a.ok === false) {
-    el.append(h('textarea', { class: 'invoer', 'data-invoer': sleutel, rows: 2, placeholder: soort === 'magazijn' ? 'Opmerking NOK (verplicht)' : 'Wat is er vastgesteld? (verplicht)',
+  const $naam = h('div', { class: 'punt-naam', onclick: () => $naam.classList.toggle('uit') }, h('h3', {}, titel), hulp ? h('p', { class: 'hulp' }, hulp) : null);
+  const el = h('section', { class: `punt regel${open ? ' open' : ''}${nok ? ' met-tekst' : ''}`, 'data-punt': p.kop }, $naam,
+    h('div', { class: 'keuzes' },
+      h('button', { class: `keuze k-ok${a && a.ok === true ? ' gekozen' : ''}`, 'data-waarde': 'ok', onclick: () => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: true }; }) }, okTekst),
+      h('button', { class: `keuze k-nok${nok ? ' gekozen' : ''}`, 'data-waarde': 'anders',
+        onclick: () => bewaarDag(soort, dc.datum, (x) => { const oud = x.antwoorden[p.kop]; x.antwoorden[p.kop] = { ok: false, tekst: oud && oud.ok === false ? oud.tekst : '' }; }) }, andersTekst)));
+  if (nok) {
+    el.append(h('textarea', { class: 'invoer', 'data-invoer': sleutel, rows: 2, placeholder: 'Opmerking NOK (verplicht)',
       oninput: (e) => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: false, tekst: e.target.value }; }, { teken: false }) }, a.tekst || ''));
   }
   return el;
@@ -1144,19 +1148,23 @@ async function schermDag(soort, datum, gi) {
     ];
   }
 
+  // Magazijn en bufferzone: de metingen en alle punten op één scherm, in kolommen.
   return [
-    h('h2', {}, `${M.DAGNAAM[soort]}: ${g.titel}`),
-    h('p', { class: 'stap' }, `Stap ${gi + 1} van ${groepen.length} · ${datumLang(dc.datum)}`),
+    h('div', { class: 'dag-kop' },
+      h('h2', {}, M.DAGNAAM[soort]),
+      h('p', { class: 'stap' }, `${datumLang(dc.datum)} · Vul de metingen in en geef elk punt een antwoord. Bij ${M.DAGKEUZE[soort][1]} hoort een opmerking.`)),
     eerderBlok,
-    open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Nog ${open.length} ${open.length === 1 ? 'punt' : 'punten'} open. Elk punt vraagt een antwoord; bij ${M.DAGKEUZE[soort][1]} hoort een tekst.`) : null,
-    g.metingen.map((m, i) => h('section', { class: `punt${open.includes(m.kop) ? ' open' : ''}`, 'data-meting': m.kop },
-      h('h3', {}, m.kop),
-      h('input', { class: 'invoer', 'data-invoer': `meting-${i}`, type: 'text', inputmode: 'decimal', autocomplete: 'off', value: dc.metingen[m.kop] === undefined ? '' : dc.metingen[m.kop],
-        oninput: (e) => bewaarDag(soort, datum, (x) => { x.metingen[m.kop] = e.target.value; }, { teken: false }) }))),
-    g.punten.map((p, i) => dagPunt(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop))),
-    h('div', { class: 'onderbalk' },
-      gi > 0 ? h('button', { class: 'knop', id: 'vorige', onclick: () => ga(`#/dag/${soort}/${datum}/${gi - 1}`) }, 'Vorige') : null,
-      h('button', { class: 'knop hoofd', id: 'verder', onclick: verder }, laatste ? 'Afsluiten' : 'Volgende'))
+    h('div', { class: 'deel-raster', id: 'dag', 'data-deel': 'dag' },
+      g.metingen.length ? h('h3', { class: 'groep-titel' }, 'Metingen') : null,
+      g.metingen.map((m, i) => h('section', { class: `punt regel${open.includes(m.kop) ? ' open' : ''}`, 'data-meting': m.kop },
+        h('div', { class: 'punt-naam' }, h('h3', {}, m.kop)),
+        h('input', { class: 'invoer getal', 'data-invoer': `meting-${i}`, type: 'text', inputmode: 'decimal', autocomplete: 'off', value: dc.metingen[m.kop] === undefined ? '' : dc.metingen[m.kop],
+          oninput: (e) => bewaarDag(soort, datum, (x) => { x.metingen[m.kop] = e.target.value; }, { teken: false }) }))),
+      h('h3', { class: 'groep-titel' }, 'Inspecties'),
+      g.punten.map((p, i) => dagPunt(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop))),
+      h('div', { class: 'slot' },
+        open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Nog ${open.length} ${open.length === 1 ? 'punt' : 'punten'} open (rood omrand). Een meting is een getal; bij ${M.DAGKEUZE[soort][1]} hoort een opmerking.`) : null,
+        h('button', { class: 'knop hoofd breed', id: 'verder', onclick: verder }, 'Afsluiten')))
   ];
 }
 
@@ -1254,8 +1262,11 @@ async function pasOpenControlesAan() {
     if (!treffer) continue;
     const vers = {};
     M.OPZOEKVELDEN.forEach((k) => { vers[k] = treffer.item[k] || ''; });
-    const verschil = M.OPZOEKVELDEN.some((k) => vers[k] !== (c.opzoek[k] || ''));
-    if (!verschil && c.bron !== 'vrij') continue;
+    // Een veld dat de controle nog niet kende (THT, bij een controle van voor deze
+    // versie) wordt aangevuld zonder dat het als een wijziging gemeld wordt.
+    const verschil = M.OPZOEKVELDEN.some((k) => k in c.opzoek && vers[k] !== (c.opzoek[k] || ''));
+    const aanvullen = M.OPZOEKVELDEN.some((k) => !(k in c.opzoek));
+    if (!verschil && !aanvullen && c.bron !== 'vrij') continue;
     await db.werkBij('controles', c.appId, (x) => {
       if (x.bron !== 'vrij' && verschil) x.wijziging = { oud: x.wijziging ? x.wijziging.oud : { ...x.opzoek }, om: Date.now() };
       x.opzoek = vers;

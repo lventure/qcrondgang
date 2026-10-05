@@ -95,10 +95,11 @@ export const FOTOS = {
 export const FOTOSOORTEN = ['zk', 'etiket', 'opmerking'];
 
 export const OPMERKING = { boven: 'opmBoven', beneden: 'opmBeneden' };
-export const OPZOEKNAAM = { product: 'Product', lotZk: 'LOT ZK', grondstof: 'Grondstof', lotGrd: 'LOT GRD', allergenen: 'Allergenen' };
-export const OPZOEKVELDEN = ['product', 'lotZk', 'grondstof', 'lotGrd', 'allergenen'];
+// THT ZK en THT GRD: de houdbaarheid uit de productielijst, om na te kijken naast het lot.
+export const OPZOEKNAAM = { product: 'Product', lotZk: 'LOT ZK', thtZk: 'THT ZK', grondstof: 'Grondstof', lotGrd: 'LOT GRD', thtGrd: 'THT GRD', allergenen: 'Allergenen' };
+export const OPZOEKVELDEN = ['product', 'lotZk', 'thtZk', 'grondstof', 'lotGrd', 'thtGrd', 'allergenen'];
 // Welke opzoekwaarden bij welk deel horen (kolommen "Gezien: ...").
-export const GEZIEN = { boven: ['grondstof', 'lotGrd', 'allergenen'], beneden: ['product', 'lotZk', 'allergenen'] };
+export const GEZIEN = { boven: ['grondstof', 'lotGrd', 'thtGrd', 'allergenen'], beneden: ['product', 'lotZk', 'thtZk', 'allergenen'] };
 
 export function veldenVan(deel) {
   return GROEPEN[deel].flatMap((g) => g.velden);
@@ -292,21 +293,15 @@ export function nieuweDag(soort, datum = vandaag()) {
 }
 
 /**
- * Verdeelt de controlepunten uit de snapshot over schermen.
- *   werk     : alle punten op één scherm (negatief werken);
- *   magazijn : eerst de metingen, dan de punten per vier.
+ * De controlepunten van een dagcontrole uit de snapshot. Beide dagcontroles
+ * staan op één scherm, dus er is altijd één groep:
+ *   werk     : alle punten, negatief (alleen aantikken wat niet OK was);
+ *   magazijn : de metingen en daarna elk punt OK of NOK.
  */
 export function dagGroepen(soort, snapshot) {
   const def = snapshot && snapshot.dag && snapshot.dag[soort];
   if (!def) return null;
-  if (DAGNEGATIEF[soort]) return [{ titel: 'Welke punten waren niet OK?', metingen: def.metingen || [], punten: def.punten }];
-  const groepen = [];
-  if (def.metingen && def.metingen.length) groepen.push({ titel: 'Metingen', metingen: def.metingen, punten: [] });
-  for (let i = 0; i < def.punten.length; i += 4) {
-    const punten = def.punten.slice(i, i + 4);
-    groepen.push({ titel: `Inspecties ${i + 1} tot ${i + punten.length}`, metingen: [], punten });
-  }
-  return groepen;
+  return [{ titel: DAGNEGATIEF[soort] ? 'Welke punten waren niet OK?' : 'Metingen en inspecties', metingen: def.metingen || [], punten: def.punten }];
 }
 
 const isGetal = (x) => String(x == null ? '' : x).trim() !== '' && !isNaN(Number(String(x).replace(',', '.')));
