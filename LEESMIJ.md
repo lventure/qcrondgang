@@ -4,7 +4,7 @@ Webapp voor de dagelijkse kwaliteitsrondgang op een Android-tablet. Werkt zonder
 
 Gebouwd zijn fase 1 tot 3: de productiecontroles (Boven en Beneden, elk op één scherm), de twee foto's per controle, en de dagcontroles "Werkmaterialen boven" en "Magazijn en bufferzone". Fase 4, de overstap naar de echte sheet, is niet begonnen: alles hieronder gebeurt op de testkopie.
 
-Versies in deze map: script 2.2.0 (`apps-script/Code.gs`), app 1.3.0 (`docs/js/versie.js`).
+Versies in deze map: script 2.2.0 (`apps-script/Code.gs`), app 1.4.0 (`docs/js/versie.js`).
 
 ## Wat staat waar
 
@@ -50,11 +50,11 @@ De volgorde telt. Stap 2 moet voor stap 4.
 ## Wat er veranderd is in de app
 
 - **Boven en Beneden elk op één scherm.** Elk punt is één regel met de naam links en de knoppen rechts, in kolommen naast elkaar: drie op een liggende tablet, twee op een staande. Open punten zijn rood omrand. De uitleg uit de kop van de sheet staat klein onder de naam; een tik op de naam toont ze volledig. Lange keuzelijsten (operatoren, trechters) zijn een uitklaplijst met exact de keuzes van de sheet, die begint op "Kies…".
-- **Lijn.** Bovenaan Boven en Beneden staat de lijn van de productie, voorgevuld uit de productielijst. Is de lijn op het laatste moment gewijzigd, dan kiest de controleur de juiste uit de lijst (L0 tot L10, MUL, STICKS, GELPACK 1, GELPACK 2, VOLPAK). De keuze blijft staan bij verversen. Bij het verzenden komt de lijn als waarde in kolom B van die rij, in de plaats van de formule. Bij een pallet of een ingetypte code is er geen lijn voorgevuld; kiest de controleur er geen, dan blijft de formule van de sheet staan.
+- **Lijn.** Bovenaan Boven en Beneden kiest de controleur de lijn van de productie: altijd precies één van de lijst (L0 tot L10, MUL, STICKS, GELPACK 1, GELPACK 2, VOLPAK). Er staat niets vooraf ingevuld, want in de productielijst ligt de lijn vaak nog niet vast (daar staat dan een combinatie zoals "L1, L3, L5"). Zonder lijn sluit een deel niet af. De keuze geldt voor de hele controle: wat bij Boven gekozen is, staat bij Beneden al klaar en kan nog gewijzigd worden. Bij het verzenden komt de lijn als waarde in kolom B van die rij, in de plaats van de formule. In het zoekscherm staat de lijn niet meer; zoeken gaat op code of product.
 - **Operatoren.** Eén punt "Operatoren" met een keuzescherm: tik iedereen aan die aan de lijn staat (één, twee, drie of meer). De knoppen zijn de keuzelijst van de kolom "Operator". Een naam die er niet in staat, typ je onderaan; ze staat er de volgende dagen als knop bij, tot ze 14 dagen niet meer gebruikt is. In de sheet komt de eerste naam in de eerste kolom "Operator" (Q) en de andere, met een komma ertussen, in de tweede (R). Met één of twee operatoren ziet een rij er dus uit zoals vandaag.
 - **Mono/Duo en Snelheid** staan in één blok, altijd direct onder elkaar.
 - **Foto's.** Camera in de pagina, foto verkleind tot 1600 punten langste zijde. De foto's van ZK en etiket zijn nodig om Beneden af te sluiten; die van het etiket mag op NVT. "Foto opmerking" is niet verplicht, bijvoorbeeld bij een NOK. In de sheet staat "volgt" tot de foto binnen is, daarna een link "Foto ZK", "Foto etiket" of "Foto opmerking" (nieuwe kolom, rechts). Een tik op de kleine foto toont ze groot.
-- **Dagcontroles.** Twee tegels op het startscherm. Werkmaterialen: per punt OK of een opmerking. Magazijn: drie metingen, daarna per punt OK of NOK met opmerking. Een dagcontrole hoort bij de dag waarop ze begonnen is. Is ze niet afgesloten, dan staat ze de volgende dag op het startscherm onder "Dagcontroles van eerdere dagen".
+- **Dagcontroles.** Twee tegels op het startscherm. Werkmaterialen boven werkt negatief, op één scherm: tik alleen aan wat niet OK was en schrijf erbij wat er scheelt; wat je niet aantikt, wordt OK bij het afsluiten. Op de afsluitknop staat wat je bevestigt, bijvoorbeeld "Afsluiten: 27 OK, 2 niet OK". Magazijn: drie metingen, daarna per punt OK of NOK met opmerking. Een dagcontrole hoort bij de dag waarop ze begonnen is. Is ze niet afgesloten, dan staat ze de volgende dag op het startscherm onder "Dagcontroles van eerdere dagen".
 
 ## Testen op de tablet en in de sheet
 
@@ -71,12 +71,12 @@ Nieuw:
 6. Past Beneden op het scherm zonder schuiven, liggend en staand? Zijn de knoppen groot genoeg voor wie de controle doet?
 7. Foto nemen van een echte gewichtsfiche. Tik op de kleine foto: is alles leesbaar? Zo niet, dan moet de foto groter bewaard worden.
 7b. Operatoren: een controle met drie operatoren waarvan één niet in de lijst. In Q staat de eerste naam, in R de andere twee met een komma. Die twee cellen tonen een waarschuwing van de gegevensvalidatie (rood hoekje); dat is de bedoeling. Weigert de sheet de waarde toch, dan zie je in de app "Fout: …": geef me die melding door.
-7a. Lijn: een controle doen waar de lijn klopt en één waar je ze wijzigt. In kolom B staat telkens de lijn als gewone waarde. Kijk of het maandoverzicht en de tellers die rijen nog bij de juiste lijn tellen.
+7a. Lijn: bij een nieuwe controle staat er "Kies…", ook als de productielijst een lijn of een combinatie heeft. Zonder lijn sluit het deel niet af. Na het verzenden staat de gekozen lijn als gewone waarde in kolom B. Kijk of het maandoverzicht en de tellers die rijen nog bij de juiste lijn tellen.
 7c. Foto opmerking nemen bij een NOK: de link staat in de nieuwe kolom. Een verzonden foto opnieuw nemen (Corrigeren): de cel wijst naar de nieuwe, de oude staat in de prullenbak van Drive.
 8. Vliegtuigmodus aan, drie controles met foto's, app sluiten, vliegtuigmodus uit: elke rij heeft één link in AK (en AL), in de map staat per foto één bestand.
 9. Foto openen vanuit de sheet op een pc, met het account van een collega: hoogstens twee klikken, geen vraag om toegang.
 10. Foto nemen tot Android het tabblad herlaadt (bijvoorbeeld via "Camera-app of bestand"): controle en foto zijn er nog.
-11. Werkmaterialen boven: de rij van vandaag krijgt OK of de opmerking, en "Ja" in "Controle afgewerkt?". Weigert de sheet "Ja" of een vrije tekst (validatie op de cel), dan zie je bovenaan in de app "Fout: …"; geef me die melding door.
+11. Werkmaterialen boven: tik twee punten aan als niet OK, met een opmerking, en sluit af. In de rij van vandaag staat bij die twee de opmerking, bij alle andere "OK", en "Ja" in "Controle afgewerkt?". Sluit ook eens af zonder iets aan te tikken: alle punten "OK". Weigert de sheet "Ja" of een vrije tekst (validatie op de cel), dan zie je bovenaan in de app "Fout: …"; geef me die melding door.
 12. Magazijn en bufferzone: metingen in B, C en D, per punt het juiste vakje, de opmerking bij NOK, "NVT" bij OK. Corrigeer daarna een NOK naar OK: in "Opmerking NOK" moet weer NVT staan en geen tekst die met `=IF(` begint.
 13. Een dagcontrole beginnen en niet afsluiten; de dag erna staat ze op het startscherm en kan ze afgewerkt of verwijderd worden.
 14. Maandoverzicht en tellers tonen dezelfde cijfers als bij handmatige invoer.
@@ -99,13 +99,13 @@ De eerste rij die de app in fase 1 in de testkopie schreef (rij 1759) is nagekek
 ## Keuzes die je moet kennen
 
 - Wordt een foto opnieuw genomen nadat ze verzonden is, dan krijgt de nieuwe een eigen bestand, wijst de cel naar de nieuwe en gaat de oude naar de prullenbak van Drive (daar blijft ze 30 dagen terug te halen). Hetzelfde gebeurt als een foto in de app gewist wordt of het etiket alsnog op NVT gaat. Het script verplaatst alleen een bestand dat het zelf voor die controle en die soort foto bewaard heeft, nooit een ander. Een oudere foto die te laat aankomt, vervangt nooit een nieuwere.
-- Lijn: voor elke controle van een order schrijft de app de lijn als waarde in kolom B; de formule van de sheet verdwijnt in die rij. Zo blijft staan op welke lijn er echt gecontroleerd is, ook als de productielijst later wijzigt. Heeft kolom B een keuzelijst die de waarde niet kent, dan zet het script de validatie van die ene cel op "waarschuwing tonen". De lijst van lijnen staat bovenaan in `Code.gs` (`LIJNEN`); je kunt ze ook zonder code aanpassen met een Script Property `LIJNEN` (namen met een komma ertussen), gevolgd door Verversen op de tablet.
+- Lijn: de app schrijft voor elke controle de gekozen lijn als waarde in kolom B; de formule van de sheet verdwijnt in die rij. Zo staat er op welke lijn er echt gecontroleerd is. Ook een pallet of een ingetypte code vraagt een lijn. Heeft kolom B een keuzelijst die de waarde niet kent, dan zet het script de validatie van die ene cel op "waarschuwing tonen". De lijst van lijnen staat bovenaan in `Code.gs` (`LIJNEN`); je kunt ze ook zonder code aanpassen met een Script Property `LIJNEN` (namen met een komma ertussen), gevolgd door Verversen op de tablet.
 - Operatoren: de eerste naam in Q, de andere in R met een komma. Staat een naam niet in de keuzelijst, of staan er twee namen in R, dan zet het script de validatie van die ene cel op "waarschuwing tonen" in plaats van "weigeren". De keuzelijst zelf en de andere rijen wijzigen niet. Tellingen of filters per operator op kolom R zien "CD, EF" als één waarde.
 - De uitdrukkelijke keuze "Geen tweede operator" is weg: wie één operator aantikt, laat R leeg.
 - Een foto wordt pas verzonden nadat Beneden van die controle in de sheet staat. Verdwijnt de rij daarna uit de sheet (rij verwijderd, app-ID gewist), dan blijft de foto wachten en zegt de app waarom.
 - Een dagcontrole van een eerdere dag afsluiten overschrijft wat er voor die dag al in de sheet staat. Bij Magazijn komt een dag die nog geen rij had onderaan, dus mogelijk onder de rij van vandaag.
 - Corrigeren in de app kan op de dag zelf. Een dagcontrole die nog niet verzonden is, kan ook later nog gecorrigeerd worden.
-- De dagcontroles blijven in groepen van hoogstens zes punten per scherm.
+- Werkmaterialen boven werkt negatief: iemand kan de dagcontrole afsluiten zonder iets aan te tikken, en dan staat elk punt als OK in de sheet. Daarom toont de afsluitknop het aantal. Magazijn en bufferzone blijft per punt OK of NOK vragen, in groepen van vier.
 
 ## Zelf de tests draaien (niet nodig om de app te gebruiken)
 

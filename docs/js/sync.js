@@ -130,8 +130,8 @@ async function verstuurFoto(item) {
   if (beneden.status !== 'verzonden') return 'wacht';
   const antwoord = await roep('foto', {
     appId: controle.appId, soort: foto.soort, fotoId: foto.id,
-    // De lijn van het moment van de foto: de bestandsnaam blijft bij elke herhaling dezelfde.
-    datum: controle.datum, code: controle.code, lijn: foto.lijn !== undefined ? foto.lijn : controle.lijn,
+    // De lijn zoals ze bij het afsluiten van Beneden vastgelegd is: de bestandsnaam blijft bij elke herhaling dezelfde.
+    datum: controle.datum, code: controle.code, lijn: foto.lijn || '',
     // Het tijdstip van de foto: het script laat een nieuwere foto nooit vervangen door een oudere.
     genomenOm: new Date(foto.genomenOm).toISOString(),
     data: await blobNaarBase64(foto.blob)

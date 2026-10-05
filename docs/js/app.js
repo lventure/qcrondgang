@@ -22,7 +22,7 @@ const SNAPSHOT_WACHT_MS = 150000; // de bronsheets zijn zwaar; intussen blijft d
 let swReg = null;           // registratie van de service worker
 let laatsteVersieCheck = Date.now();
 let bevestigWeg = null;    // app-ID (of id van een dagcontrole) waarvoor "verwijderen" om bevestiging vraagt
-const nieuw = { tab: 'order', lijn: '', zoek: '', gekozen: null }; // toestand van "Nieuwe controle"
+const nieuw = { tab: 'order', zoek: '', gekozen: null }; // toestand van "Nieuwe controle"
 const objectUrls = [];     // adressen van getoonde foto's, vrij te geven na het tekenen
 const FOTO_LANGSTE_ZIJDE = 1600;
 const FOTO_KWALITEIT = 0.8;
@@ -191,7 +191,7 @@ async function toon({ behoudScroll = false } = {}) {
   const veld = actief && $scherm.contains(actief) ? actief.getAttribute('data-invoer') || (actief.id === 'zoek' ? '#zoek' : null) : null;
   const getypt = veld ? actief.value : null;
   $scherm.replaceChildren(...[kop, inhoud].flat(Infinity).filter(Boolean));
-  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster'));
+  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster, .dag-raster'));
   vorigeUrls.forEach((u) => URL.revokeObjectURL(u));
   if (veld) {
     const terug = veld === '#zoek' ? document.getElementById('zoek') : $scherm.querySelector(`[data-invoer="${veld}"]`);
@@ -318,7 +318,7 @@ function chip(deel, d) {
 
 function rijControle(c) {
   return h('button', { class: 'rij', 'data-code': c.code, onclick: () => ga(`#/c/${c.appId}`) },
-    h('span', { class: 'lijn' }, c.lijn || (c.bron === 'pallet' ? 'Pallet' : '?')),
+    h('span', { class: 'lijn' }, M.lijnVan(c) || (c.bron === 'pallet' ? 'Pallet' : '?')),
     h('span', { class: 'rij-tekst' }, h('strong', {}, c.code), h('span', {}, c.opzoek.product || 'Code niet in de lijst')),
     h('span', { class: 'chips' }, M.DELEN.map((d) => chip(d, c.delen[d]))));
 }
@@ -360,12 +360,10 @@ async function schermNieuw() {
   function tekenLijst() {
     const z = nieuw.zoek.trim().toLowerCase();
     let items = bron();
-    if (nieuw.tab === 'order' && nieuw.lijn) items = items.filter((o) => o.lijn === nieuw.lijn);
     if (z) items = items.filter((o) => String(o.code).toLowerCase().includes(z) || String(o.product).toLowerCase().includes(z));
     const getoond = items.slice(0, 60);
     $lijst.replaceChildren(...[
       getoond.map((o) => h('button', { class: 'rij', 'data-code': o.code, onclick: () => kies(String(o.code)) },
-        h('span', { class: 'lijn' }, nieuw.tab === 'order' ? o.lijn || '?' : 'Pallet'),
         h('span', { class: 'rij-tekst' }, h('strong', {}, o.code), h('span', {}, o.product)),
         h('span', { class: 'chip' }, o.status || o.toestand || ''))),
       items.length > getoond.length ? h('p', { class: 'klein zacht' }, `Nog ${items.length - getoond.length} meer. Zoek op code om te verfijnen.`) : null,
@@ -385,7 +383,7 @@ async function schermNieuw() {
     const waarden = {};
     M.OPZOEKVELDEN.forEach((k) => { waarden[k] = treffer ? treffer.item[k] || '' : ''; });
     $keuze.replaceChildren(h('div', { class: 'kaart blok-boven', id: 'keuze-kaart' },
-      h('h3', {}, `${treffer && treffer.item.lijn ? treffer.item.lijn + ' · ' : ''}${code}`),
+      h('h3', {}, code),
       treffer ? opzoekLijst(waarden, M.OPZOEKVELDEN) : h('div', { class: 'melding wacht' }, 'Deze code staat niet in de opgehaalde gegevens. De app kan product en lot niet tonen; de sheet vult ze zelf aan.'),
       bestaand ? h('div', { class: 'melding wacht', id: 'bestaat-al' }, 'Er bestaat vandaag al een controle voor deze code.',
         h('div', { class: 'knoppen' }, h('button', { class: 'knop', onclick: () => ga(`#/c/${bestaand.appId}`) }, 'Bestaande controle openen'))) : null,
@@ -411,24 +409,17 @@ async function schermNieuw() {
     ga(`#/c/${c.appId}/${deel}/0`);
   }
 
-  const lijnen = [...new Set(snapshot.orders.map((o) => o.lijn).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nl', { numeric: true }));
-  const $filter = h('div', { class: 'filter', id: 'lijn-filter' });
-  function tekenFilter() {
-    $filter.replaceChildren(...(nieuw.tab !== 'order' ? [] : [
-      h('button', { class: nieuw.lijn === '' ? 'aan' : '', onclick: () => { nieuw.lijn = ''; tekenFilter(); tekenLijst(); } }, 'Alle lijnen'),
-      ...lijnen.map((l) => h('button', { class: nieuw.lijn === l ? 'aan' : '', 'data-lijn': l, onclick: () => { nieuw.lijn = l; tekenFilter(); tekenLijst(); } }, l))
-    ]));
-  }
   const $tabs = h('div', { class: 'filter' });
   function tekenTabs() {
     $tabs.replaceChildren(
-      h('button', { class: nieuw.tab === 'order' ? 'aan' : '', id: 'tab-orders', onclick: () => { nieuw.tab = 'order'; tekenTabs(); tekenFilter(); tekenLijst(); } }, `Orders (${snapshot.orders.length})`),
-      h('button', { class: nieuw.tab === 'pallet' ? 'aan' : '', id: 'tab-pallets', onclick: () => { nieuw.tab = 'pallet'; tekenTabs(); tekenFilter(); tekenLijst(); } }, `Pallets (${snapshot.pallets.length})`));
+      h('button', { class: nieuw.tab === 'order' ? 'aan' : '', id: 'tab-orders', onclick: () => { nieuw.tab = 'order'; tekenTabs(); tekenLijst(); } }, `Orders (${snapshot.orders.length})`),
+      h('button', { class: nieuw.tab === 'pallet' ? 'aan' : '', id: 'tab-pallets', onclick: () => { nieuw.tab = 'pallet'; tekenTabs(); tekenLijst(); } }, `Pallets (${snapshot.pallets.length})`));
   }
   const $zoek = h('input', { class: 'invoer', id: 'zoek', type: 'search', placeholder: 'Zoek op code of product', value: nieuw.zoek, autocomplete: 'off', oninput: (e) => { nieuw.zoek = e.target.value; tekenLijst(); } });
 
-  tekenTabs(); tekenFilter(); tekenLijst(); tekenKeuze();
-  return [h('h2', {}, 'Nieuwe controle'), $keuze, $tabs, $zoek, $filter, $lijst];
+  // De lijn uit de productielijst staat hier niet: ze ligt vaak nog niet vast. Zoeken gaat op code of product.
+  tekenTabs(); tekenLijst(); tekenKeuze();
+  return [h('h2', {}, 'Nieuwe controle'), $keuze, $tabs, $zoek, $lijst];
 }
 
 /* ------------------------------------------------------------------ */
@@ -437,7 +428,7 @@ async function schermNieuw() {
 
 function kopControle(c) {
   return h('div', { class: 'kaart', id: 'kop-controle' },
-    h('h3', {}, `${c.lijn ? c.lijn + ' · ' : ''}${c.code}`),
+    h('h3', {}, `${M.lijnVan(c) ? M.lijnVan(c) + ' · ' : ''}${c.code}`),
     h('p', {}, c.opzoek.product || (c.bron === 'vrij' ? 'Code niet in de opgehaalde gegevens' : '')),
     h('p', { class: 'klein zacht' }, datumLang(c.datum)));
 }
@@ -647,7 +638,7 @@ async function kiesOperatoren(c) {
   }
   $naam.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); voegToe(); } });
   const $laag = h('div', { class: 'kiezer', id: 'operatoren-kiezer' },
-    h('h2', {}, `Operatoren · ${c.lijn ? c.lijn + ' · ' : ''}${c.code}`),
+    h('h2', {}, `Operatoren · ${M.lijnVan(c) ? M.lijnVan(c) + ' · ' : ''}${c.code}`),
     $gekozen, $lijst,
     h('div', { class: 'kiezer-nieuw' }, $naam, h('button', { class: 'knop', id: 'operator-toevoegen', onclick: voegToe }, 'Toevoegen')),
     h('div', { class: 'knoppen' }, h('button', { class: 'knop hoofd', id: 'operatoren-klaar', onclick: async () => {
@@ -660,27 +651,27 @@ async function kiesOperatoren(c) {
 }
 
 /**
- * De lijn van deze productie. Ze komt uit de productielijst, maar kan op het
- * laatste moment gewijzigd zijn: de controleur kiest dan de juiste. Een gekozen
- * lijn blijft staan bij het verversen en komt in kolom "Lijn" van de sheet.
+ * De lijn van deze productie: altijd precies één, gekozen door de controleur.
+ * Er staat niets vooraf: de lijn in de productielijst ligt vaak nog niet vast
+ * (daar staat dan een combinatie zoals "L1, L3, L5"). Zonder lijn sluit een
+ * deel niet af. De keuze geldt voor de hele controle (Boven en Beneden) en
+ * komt in kolom "Lijn" van de sheet.
  */
-function lijnKeuze(c) {
-  const keuzes = M.lijnKeuzes(snapshot, c.lijn);
-  const treffer = M.zoekCode(snapshot, c.code);
-  const gepland = treffer && treffer.item.lijn ? String(treffer.item.lijn) : '';
-  return h('label', { class: 'lijn-keuze' },
-    h('span', {}, c.lijn && gepland && gepland !== c.lijn ? `Lijn (planning: ${gepland})` : 'Lijn'),
-    h('select', { class: `invoer kies${c.lijn ? ' gekozen' : ''}`, id: 'lijn', onchange: async (e) => {
-      const lijn = e.target.value;
+function lijnKeuze(c, open) {
+  const lijn = M.lijnVan(c);
+  return h('label', { class: `lijn-keuze${open ? ' open' : ''}`, 'data-veld': 'lijn' },
+    h('span', {}, 'Lijn'),
+    h('select', { class: `invoer kies${lijn ? ' gekozen' : ''}`, id: 'lijn', onchange: async (e) => {
+      const gekozen = e.target.value;
       try {
-        await db.werkBij('controles', c.appId, (x) => { x.lijn = lijn; x.lijnZelf = true; });
+        await db.werkBij('controles', c.appId, (x) => { x.lijn = gekozen; x.lijnZelf = true; });
       } catch (err) {
-        zetMelding('fout', `Bewaren op de tablet mislukte: ${err && err.message ? err.message : err}. De lijn is NIET gewijzigd.`);
+        zetMelding('fout', `Bewaren op de tablet mislukte: ${err && err.message ? err.message : err}. De lijn is NIET bewaard.`);
       }
       toon({ behoudScroll: true });
     } },
-      !c.lijn ? h('option', { value: '', disabled: true, selected: true }, 'Kies…') : null,
-      keuzes.map((k) => h('option', { value: k, selected: k === c.lijn }, k))));
+      !lijn ? h('option', { value: '', disabled: true, selected: true }, 'Kies…') : null,
+      M.lijnKeuzes(snapshot, lijn).map((k) => h('option', { value: k, selected: k === lijn }, k))));
 }
 
 /** Een heel deel (Boven of Beneden) op één scherm: alle punten in kolommen naast elkaar. */
@@ -688,15 +679,16 @@ async function schermDeel(c, deel) {
   const groepen = M.GROEPEN[deel];
   const d = c.delen[deel];
   const open = toonOpen ? M.openPunten(deel, d) : [];
+  const lijnOpen = toonOpen && !M.lijnVan(c);
   const fotos = deel === 'beneden' ? await fotosVan(d) : {};
 
   async function afsluiten() {
     const vers = await db.haal('controles', c.appId);
     const antw = vers.delen[deel];
-    if (M.openPunten(deel, antw).length) {
+    if (M.openPunten(deel, antw).length || !M.lijnVan(vers)) {
       toonOpen = true;
       await toon({ behoudScroll: true });
-      const eerste = document.querySelector('.punt.open');
+      const eerste = document.querySelector('.lijn-keuze.open, .punt.open');
       if (eerste) eerste.scrollIntoView({ block: 'nearest' });
       return;
     }
@@ -712,7 +704,12 @@ async function schermDeel(c, deel) {
     if (deel === 'beneden') {
       // Eerst de gegevens van de controle (klein), daarna de foto's (groot).
       const f = await fotosVan(vers.delen.beneden);
-      for (const soort of M.FOTOSOORTEN) if (f[soort] && f[soort].status !== 'verzonden') await sync.fotoInWachtrij(f[soort].id, c.appId);
+      for (const soort of M.FOTOSOORTEN) {
+        if (!f[soort] || f[soort].status === 'verzonden') continue;
+        // De lijn van nu hoort bij de bestandsnaam van de foto en blijft daarna dezelfde bij elke herhaling.
+        await db.werkBij('fotos', f[soort].id, (x) => { x.lijn = M.lijnVan(vers); });
+        await sync.fotoInWachtrij(f[soort].id, c.appId);
+      }
     }
     sync.verwerk();
     zetMelding('ok', `${M.DEELNAAM[deel]} is afgesloten voor ${c.code}.`, 1);
@@ -722,6 +719,7 @@ async function schermDeel(c, deel) {
   const fotoOpen = M.FOTOSOORTEN.some((soort) => open.includes(M.FOTOS[soort].punt));
   const puntenOpen = open.filter((id) => M.VELDEN[id]);
   const openTekst = [
+    lijnOpen ? 'Kies de lijn (bovenaan).' : '',
     puntenOpen.length ? `Nog ${puntenOpen.length} ${puntenOpen.length === 1 ? 'punt' : 'punten'} open (rood omrand)${open.includes(M.OPMERKING[deel]) ? '; een NOK of STOP vraagt een opmerking' : ''}.` : '',
     fotoOpen ? 'Beide foto\'s zijn nodig; die van het etiket mag op NVT staan.' : ''
   ].filter(Boolean).join(' ');
@@ -730,7 +728,7 @@ async function schermDeel(c, deel) {
     wijzigingBanner(c),
     h('div', { class: 'deel-raster', id: 'deel', 'data-deel': deel },
       h('div', { class: 'groep info', id: 'kop-controle' },
-        h('div', { class: 'kop-rij' }, h('h2', {}, `${M.DEELNAAM[deel]} · ${c.code}`), lijnKeuze(c)),
+        h('div', { class: 'kop-rij' }, h('h2', {}, `${M.DEELNAAM[deel]} · ${c.code}`), lijnKeuze(c, lijnOpen)),
         c.bron !== 'vrij' ? opzoekLijst(c.opzoek, M.GEZIEN[deel])
           : h('p', { class: 'klein zacht' }, 'Deze code staat niet in de opgehaalde gegevens. De sheet vult product en lot zelf aan.'),
         c.datum !== M.vandaag() ? h('p', { class: 'klein zacht' }, `Controle van ${datumLang(c.datum)}`) : null),
@@ -746,7 +744,7 @@ async function schermDeel(c, deel) {
         M.FOTOSOORTEN.map((soort) => fotoPunt(c, soort, fotos[soort], open.includes(M.FOTOS[soort].punt), true))
       ] : null,
       h('div', { class: 'slot' },
-        open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, openTekst) : null,
+        open.length || lijnOpen ? h('div', { class: 'melding fout', id: 'open-melding' }, openTekst) : null,
         h('button', { class: 'knop hoofd breed', id: 'verder', onclick: afsluiten }, `${M.DEELNAAM[deel]} afsluiten`)))
   ];
 }
@@ -897,10 +895,10 @@ function neemFoto(titel) {
 /** Bewaart een nieuwe foto: eerst de foto zelf, dan de verwijzing in de controle. */
 async function bewaarFoto(appId, soort, blob) {
   const id = M.nieuwId();
-  // De lijn van nu hoort bij de bestandsnaam en verandert daarna niet meer:
-  // een herhaling van de upload vindt zo altijd hetzelfde bestand terug.
+  // De lijn hoort bij de bestandsnaam. Ze wordt vastgelegd bij het afsluiten van
+  // Beneden en blijft daarna bij elke herhaling van de upload dezelfde.
   const controle = await db.haal('controles', appId);
-  await db.zet('fotos', { id, appId, soort, blob, lijn: controle ? controle.lijn || '' : '', genomenOm: Date.now(), status: 'klaar', verzondenOm: null });
+  await db.zet('fotos', { id, appId, soort, blob, lijn: M.lijnVan(controle), genomenOm: Date.now(), status: 'klaar', verzondenOm: null });
   let oud = null;
   let gezet = false;
   await db.werkBij('controles', appId, (c) => {
@@ -1027,6 +1025,30 @@ function dagPunt(soort, dc, p, sleutel, open) {
   return el;
 }
 
+/**
+ * Negatief werken (Werkmaterialen boven): één tegel per punt. Een tik zegt "dit
+ * was niet OK" en vraagt wat er scheelt. Wat niet aangetikt is, wordt OK bij het
+ * afsluiten.
+ */
+function dagTegel(soort, dc, p, sleutel, open) {
+  const a = dc.antwoorden[p.kop];
+  const nietOk = !!a && a.ok === false;
+  const [titel, hulp] = dagTitel(soort, p);
+  const el = h('section', { class: `dag-tegel${nietOk ? ' niet-ok' : ''}${open ? ' open' : ''}`, 'data-punt': p.kop, 'data-niet-ok': String(nietOk) },
+    h('button', { class: 'dag-naam', 'aria-pressed': String(nietOk),
+      // Eén tik markeert. Terugzetten gaat met "Toch OK", zodat een getypte opmerking niet per ongeluk verdwijnt.
+      onclick: nietOk ? null : () => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: false, tekst: '' }; }) },
+      h('span', { class: 'dag-tekst' }, h('strong', {}, titel), hulp ? h('small', {}, hulp) : null),
+      h('span', { class: 'dag-stand' }, nietOk ? 'niet OK' : 'OK')));
+  if (nietOk) {
+    el.append(h('div', { class: 'dag-binnen' },
+      h('textarea', { class: 'invoer', 'data-invoer': sleutel, rows: 2, placeholder: 'Wat is er vastgesteld? (verplicht)',
+        oninput: (e) => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: false, tekst: e.target.value }; }, { teken: false }) }, a.tekst || ''),
+      h('button', { class: 'keuze', 'data-waarde': 'toch-ok', onclick: () => bewaarDag(soort, dc.datum, (x) => { delete x.antwoorden[p.kop]; }) }, 'Toch OK')));
+  }
+  return el;
+}
+
 /** Een dagcontrole van een eerdere dag die niet afgesloten is, mag van de tablet weg. Vraagt een tweede tik. */
 function dagWeg(dc) {
   const zeker = bevestigWeg === dc.id;
@@ -1067,20 +1089,30 @@ async function schermDag(soort, datum, gi) {
   const g = groepen[gi];
   const open = toonOpen ? M.dagOpen(dc, groepen, gi) : [];
   const laatste = gi === groepen.length - 1;
+  const negatief = M.DAGNEGATIEF[soort];
 
   async function verder() {
-    const vers = (await db.haal('dagcontroles', M.dagId(soort, datum))) || M.nieuweDag(soort, datum);
+    let vers = await db.haal('dagcontroles', M.dagId(soort, datum));
+    // Een leeg scherm dat al voor middernacht openstond: de controle van vandaag tonen.
+    if (!vers && datum !== M.vandaag()) return ga(`#/dag/${soort}/${M.vandaag()}`);
+    if (!vers) vers = M.nieuweDag(soort, datum);
     if (M.dagOpen(vers, groepen, gi).length) {
       toonOpen = true;
       await toon({ behoudScroll: true });
-      const eerste = document.querySelector('.punt.open');
+      const eerste = document.querySelector('.punt.open, .dag-tegel.open');
       if (eerste) eerste.scrollIntoView({ block: 'center' });
       return;
     }
     if (!laatste) return ga(`#/dag/${soort}/${datum}/${gi + 1}`);
     const elders = groepen.findIndex((_, i) => M.dagOpen(vers, groepen, i).length);
     if (elders !== -1) return ga(`#/dag/${soort}/${datum}/${elders}`, { markeerOpen: true });
-    await db.werkBij('dagcontroles', vers.id, (x) => {
+    // Bij negatief werken kan er nog niets bewaard zijn (niets aangetikt): dan
+    // ontstaat de dagcontrole hier.
+    await db.werkBijOfMaak('dagcontroles', vers.id, () => M.nieuweDag(soort, datum), (x) => {
+      if (!isOpenDeel(x)) return false;
+      // Negatief werken: elk getoond punt dat niet aangetikt is, wordt nu
+      // uitdrukkelijk OK. Zo staat vast welke punten de controleur gezien heeft.
+      if (negatief) groepen.forEach((gr) => gr.punten.forEach((p) => { if (!x.antwoorden[p.kop]) x.antwoorden[p.kop] = { ok: true }; }));
       x.status = 'klaar';
       x.versie += 1;
       x.afgeslotenOm = new Date().toISOString();
@@ -1091,13 +1123,31 @@ async function schermDag(soort, datum, gi) {
     ga('#/');
   }
 
+  const eerderBlok = eerder ? h('div', { class: 'melding wacht', id: 'dag-eerder' },
+    `Dit is de dagcontrole van ${datumLang(datum)}, niet van vandaag. Afsluiten schrijft ze in de sheet bij die datum; staat daar voor die dag al iets, dan wordt het overschreven.`,
+    dagWeg(dc)) : null;
+
+  if (negatief) {
+    // Na een correctie staan de punten uitdrukkelijk op OK; alleen "niet OK" telt als aangetikt.
+    const aantal = g.punten.length;
+    const nietOk = g.punten.filter((p) => { const a = dc.antwoorden[p.kop]; return a && a.ok === false; }).length;
+    return [
+      h('div', { class: 'dag-kop' },
+        h('h2', {}, `${M.DAGNAAM[soort]}: welke punten waren niet OK?`),
+        h('p', { class: 'stap' }, `${datumLang(dc.datum)} · Tik aan wat niet OK was en schrijf erbij wat er scheelt. Wat je niet aantikt, is OK.`)),
+      eerderBlok,
+      h('div', { class: 'dag-raster', id: 'dag' }, g.punten.map((p, i) => dagTegel(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop)))),
+      h('div', { class: 'slot dag-slot' },
+        open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Bij ${open.length} ${open.length === 1 ? 'punt' : 'punten'} ontbreekt de opmerking: schrijf wat er scheelt, of tik op "Toch OK".`) : null,
+        h('button', { class: 'knop hoofd breed', id: 'verder', 'data-niet-ok': String(nietOk), onclick: verder },
+          nietOk ? `Afsluiten: ${aantal - nietOk} OK, ${nietOk} niet OK` : `Afsluiten: alle ${aantal} punten OK`))
+    ];
+  }
 
   return [
     h('h2', {}, `${M.DAGNAAM[soort]}: ${g.titel}`),
     h('p', { class: 'stap' }, `Stap ${gi + 1} van ${groepen.length} · ${datumLang(dc.datum)}`),
-    eerder ? h('div', { class: 'melding wacht', id: 'dag-eerder' },
-      `Dit is de dagcontrole van ${datumLang(datum)}, niet van vandaag. Afsluiten schrijft ze in de sheet bij die datum; staat daar voor die dag al iets, dan wordt het overschreven.`,
-      dagWeg(dc)) : null,
+    eerderBlok,
     open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Nog ${open.length} ${open.length === 1 ? 'punt' : 'punten'} open. Elk punt vraagt een antwoord; bij ${M.DAGKEUZE[soort][1]} hoort een tekst.`) : null,
     g.metingen.map((m, i) => h('section', { class: `punt${open.includes(m.kop) ? ' open' : ''}`, 'data-meting': m.kop },
       h('h3', {}, m.kop),
@@ -1205,12 +1255,11 @@ async function pasOpenControlesAan() {
     const vers = {};
     M.OPZOEKVELDEN.forEach((k) => { vers[k] = treffer.item[k] || ''; });
     const verschil = M.OPZOEKVELDEN.some((k) => vers[k] !== (c.opzoek[k] || ''));
-    if (!verschil && c.bron !== 'vrij' && (c.lijnZelf || c.lijn === (treffer.item.lijn || ''))) continue;
+    if (!verschil && c.bron !== 'vrij') continue;
     await db.werkBij('controles', c.appId, (x) => {
       if (x.bron !== 'vrij' && verschil) x.wijziging = { oud: x.wijziging ? x.wijziging.oud : { ...x.opzoek }, om: Date.now() };
       x.opzoek = vers;
       x.bron = treffer.bron;
-      if (!x.lijnZelf) x.lijn = treffer.item.lijn || ''; // een lijn die de controleur zelf koos, blijft staan
     });
   }
 }

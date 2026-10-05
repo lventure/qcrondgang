@@ -3,24 +3,32 @@
 // de sheet de enige plek blijft waar lijsten onderhouden worden.
 
 export const DELEN = ['boven', 'beneden'];
+export const DEELNAAM = { boven: 'Boven', beneden: 'Beneden' };
 
-// De lijnen waaruit de controleur kiest. De lijst komt uit de snapshot (het
-// script); deze kopie dient alleen zolang het script ze nog niet meestuurt.
+// De lijnen waaruit de controleur kiest: altijd precies één, nooit vooraf
+// ingevuld. De lijst komt uit de snapshot (het script); deze kopie dient alleen
+// zolang het script ze nog niet meestuurt.
 export const LIJNEN = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'MUL', 'STICKS', 'GELPACK 1', 'GELPACK 2', 'VOLPAK'];
 
 /**
- * De keuzes voor de lijn van een controle: de vaste lijst, aangevuld met lijnen
- * die in de productielijst voorkomen en er niet in staan, en met de lijn die nu
- * bij de controle staat. Wat de app toont, kan dus altijd gekozen blijven.
+ * De keuzes voor de lijn van een controle: de vaste lijst, en de lijn die nu
+ * bij de controle staat als die er (na een wijziging van de lijst) niet meer in
+ * zit. De lijn uit de productielijst telt niet mee: daar staat soms een
+ * combinatie ("L1, L3, L5") omdat de lijn nog niet vastlag.
  */
 export function lijnKeuzes(snapshot, huidige) {
   const uit = (snapshot && Array.isArray(snapshot.lijnen) && snapshot.lijnen.length ? snapshot.lijnen : LIJNEN).map(String);
-  const erbij = (x) => { x = String(x == null ? '' : x).trim(); if (x && !uit.includes(x)) uit.push(x); };
-  ((snapshot && snapshot.orders) || []).forEach((o) => erbij(o.lijn));
-  erbij(huidige);
+  const h = String(huidige == null ? '' : huidige).trim();
+  if (h && !uit.includes(h)) uit.push(h);
   return uit;
 }
-export const DEELNAAM = { boven: 'Boven', beneden: 'Beneden' };
+
+/**
+ * De lijn die de controleur voor deze controle gekozen heeft, of '' als hij nog
+ * niet gekozen heeft. Een lijn die een oudere versie van de app uit de
+ * productielijst overnam, telt niet als gekozen.
+ */
+export const lijnVan = (controle) => (controle && controle.lijnZelf && controle.lijn ? String(controle.lijn) : '');
 
 // soort: 'vakje' (Ja/Nee), 'keuze' (keuzelijst van de sheet), 'getal', 'tekst',
 //        'meer' (meerdere namen uit een keuzelijst van de sheet, of een eigen naam)
@@ -218,7 +226,8 @@ export function nieuweControle(code, item, bron) {
     aangemaaktOm: Date.now(),
     code: String(code).trim(),
     bron, // 'order', 'pallet' of 'vrij'
-    lijn: item ? item.lijn || '' : '',
+    lijn: '', // kiest de controleur zelf; de lijn uit de productielijst wordt niet overgenomen
+    lijnZelf: false,
     opzoek,
     wijziging: null,
     delen: { boven: leegDeel(), beneden: leegDeel() }
@@ -247,8 +256,8 @@ export function bouwVerzoek(controle, deel) {
     deel,
     datum: controle.datum,
     code: controle.code,
-    // De lijn zoals ze nu bij de controle staat (uit de productielijst, of gekozen door de controleur).
-    lijn: controle.lijn || '',
+    // De lijn die de controleur gekozen heeft.
+    lijn: lijnVan(controle),
     waarden,
     vervallen,
     gezien: d.gezien,
@@ -271,6 +280,9 @@ export const DAGSOORTEN = ['werk', 'magazijn'];
 export const DAGNAAM = { werk: 'Werkmaterialen boven', magazijn: 'Magazijn en bufferzone' };
 // werk: "OK" of een opmerking. magazijn: OK of NOK met een opmerking.
 export const DAGKEUZE = { werk: ['OK', 'Opmerking'], magazijn: ['OK', 'NOK'] };
+// Negatief werken: de vraag is "welke punten waren niet OK?". De controleur tikt
+// alleen die aan; wat hij niet aantikt, wordt bij het afsluiten OK.
+export const DAGNEGATIEF = { werk: true, magazijn: false };
 
 export const dagId = (soort, datum = vandaag()) => `${soort}:${datum}`;
 
@@ -279,70 +291,21 @@ export function nieuweDag(soort, datum = vandaag()) {
   return { id: dagId(soort, datum), soort, datum, aangemaaktOm: Date.now(), status: 'open', antwoorden: {}, metingen: {}, versie: 0, afgeslotenOm: null, verzondenOm: null, rij: null };
 }
 
-function gemeenschappelijk(teksten) {
-  if (teksten.length === 1) return teksten[0];
-  let n = 0;
-  while (teksten.every((t) => t[n] !== undefined && t[n] === teksten[0][n])) n++;
-  return teksten[0].slice(0, n).replace(/[\s\-–:L0-9]+$/, '').trim() || teksten[0].split(/\s+/)[0];
-}
-
 /**
- * Verdeelt de controlepunten uit de snapshot over schermen. Punten die bij
- * elkaar horen (zelfde eerste woord) blijven samen; hoogstens zes per scherm.
+ * Verdeelt de controlepunten uit de snapshot over schermen.
+ *   werk     : alle punten op één scherm (negatief werken);
+ *   magazijn : eerst de metingen, dan de punten per vier.
  */
 export function dagGroepen(soort, snapshot) {
   const def = snapshot && snapshot.dag && snapshot.dag[soort];
   if (!def) return null;
+  if (DAGNEGATIEF[soort]) return [{ titel: 'Welke punten waren niet OK?', metingen: def.metingen || [], punten: def.punten }];
   const groepen = [];
   if (def.metingen && def.metingen.length) groepen.push({ titel: 'Metingen', metingen: def.metingen, punten: [] });
-
-  let stukken = [];
-  if (soort === 'magazijn') {
-    for (let i = 0; i < def.punten.length; i += 4) stukken.push(def.punten.slice(i, i + 4));
-  } else {
-    // 1. opeenvolgende punten met hetzelfde eerste woord
-    const families = [];
-    def.punten.forEach((p) => {
-      const woord = p.kop.split(/\s+/)[0];
-      const laatste = families[families.length - 1];
-      if (laatste && laatste.woord === woord) laatste.punten.push(p); else families.push({ woord, punten: [p] });
-    });
-    // 2. grote families in gelijke stukken van hoogstens zes
-    families.forEach((f) => {
-      const delen = Math.ceil(f.punten.length / 6);
-      const per = Math.ceil(f.punten.length / delen);
-      for (let i = 0; i < f.punten.length; i += per) stukken.push(f.punten.slice(i, i + per));
-    });
-    // 3. een stuk van één of twee punten schuift bij een buur
-    const samen = [];
-    for (let i = 0; i < stukken.length; i++) {
-      const stuk = stukken[i];
-      const vorige = samen[samen.length - 1];
-      const volgende = stukken[i + 1];
-      if (stuk.length <= 2 && volgende && volgende.length + stuk.length <= 6) { stukken[i + 1] = stuk.concat(volgende); continue; }
-      if (stuk.length <= 2 && vorige && vorige.length + stuk.length <= 6) { samen[samen.length - 1] = vorige.concat(stuk); continue; }
-      samen.push(stuk);
-    }
-    stukken = samen;
+  for (let i = 0; i < def.punten.length; i += 4) {
+    const punten = def.punten.slice(i, i + 4);
+    groepen.push({ titel: `Inspecties ${i + 1} tot ${i + punten.length}`, metingen: [], punten });
   }
-  let teller = 0;
-  stukken.forEach((punten) => {
-    let titel;
-    if (soort === 'magazijn') {
-      titel = `Inspecties ${teller + 1} tot ${teller + punten.length}`;
-    } else {
-      const namen = [];
-      let groep = [];
-      punten.forEach((p, i) => {
-        groep.push(p.kop);
-        const volgende = punten[i + 1];
-        if (!volgende || volgende.kop.split(/\s+/)[0] !== p.kop.split(/\s+/)[0]) { namen.push(gemeenschappelijk(groep)); groep = []; }
-      });
-      titel = namen.join(' en ');
-    }
-    teller += punten.length;
-    groepen.push({ titel, metingen: [], punten });
-  });
   return groepen;
 }
 
@@ -356,6 +319,8 @@ export function dagOpen(dc, groepen, groep) {
     g.metingen.forEach((m) => { if (!isGetal(dc.metingen[m.kop])) open.push(m.kop); });
     g.punten.forEach((p) => {
       const a = dc.antwoorden[p.kop];
+      // Negatief werken: een punt dat niet aangetikt is, is niet open (het wordt OK bij het afsluiten).
+      if (!a && DAGNEGATIEF[dc.soort]) return;
       if (!a || (a.ok !== true && !String(a.tekst || '').trim())) open.push(p.kop);
     });
   });

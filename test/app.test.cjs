@@ -38,14 +38,21 @@ async function stelIn(page) {
   await page.click('#inst-opslaan');
   await page.waitForSelector('#tegel-controles');
 }
-async function begin(page, code, deel, { tab } = {}) {
+async function kiesLijn(page, lijn) {
+  await page.selectOption('#lijn', lijn);
+  await page.waitForFunction((l) => { const e = document.querySelector('#lijn'); return e && e.value === l && e.classList.contains('gekozen'); }, lijn);
+}
+/** Start een nieuwe controle. De lijn is nooit vooraf ingevuld; lijn: null laat ze leeg, anders wordt ze meteen gekozen. */
+async function begin(page, code, deel, { tab, lijn = 'L8' } = {}) {
   await page.goto(srv.appUrl + '#/nieuw');
   await page.waitForSelector('#zoek');
-  if (tab === 'pallet') await page.click('#tab-pallets');
+  await page.click(tab === 'pallet' ? '#tab-pallets' : '#tab-orders'); // het tabblad van de vorige keer blijft staan
   await page.fill('#zoek', code);
   await page.click(`#zoek-lijst .rij[data-code="${code}"]`);
   await page.click(`#start-${deel}`);
   await page.waitForSelector('#verder');
+  assert.strictEqual(await page.inputValue('#lijn'), '', 'de lijn is nooit vooraf ingevuld');
+  if (lijn) await kiesLijn(page, lijn);
 }
 /** Kiest de operatoren in het keuzescherm: namen aantikken; eigen = namen die niet in de lijst staan en getypt worden. */
 async function kiesOperatoren(page, namen, eigen = []) {
@@ -121,6 +128,14 @@ async function vulFotos(page, { etiket = 'nvt' } = {}) {
   if (etiket === 'foto') await neemFoto(page, 'etiket');
   else { await page.click('#foto-etiket-nvt'); await page.waitForSelector('section[data-veld="fotoEtiket"][data-foto="nvt"]'); }
 }
+/** Werkmaterialen boven (negatief werken): tikt een punt aan als "niet OK" en schrijft er eventueel de opmerking bij. */
+async function nietOk(page, kop, tekst) {
+  const sel = `section.dag-tegel[data-punt="${kop}"]`;
+  await page.click(`${sel} .dag-naam`);
+  await page.waitForSelector(`${sel}[data-niet-ok="true"] textarea`);
+  if (tekst) await page.fill(`${sel} textarea`, tekst);
+}
+const aangetikt = (page) => page.$$eval('section.dag-tegel[data-niet-ok="true"]', (els) => els.map((e) => [e.dataset.punt, e.querySelector('textarea').value]));
 /** Vult alle punten op het huidige scherm van een dagcontrole met OK, behalve de opgegeven afwijkingen. */
 async function vulDagScherm(page, afwijkingen = {}) {
   const koppen = await page.$$eval('section[data-punt]', (els) => els.map((e) => e.dataset.punt));
@@ -248,9 +263,8 @@ async function scenario(naam, fn) {
   await scenario('knoppen zijn exact de keuzelijst van de sheet; niets vooraf ingevuld', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);
-    await begin(page, '260102', 'boven');
+    await begin(page, '260102', 'boven', { lijn: null });
     assert.strictEqual(await bestaat(page, '#deel section[data-veld] .gekozen'), false, 'geen enkel antwoord vooraf ingevuld');
-    assert.strictEqual(await page.inputValue('#lijn'), 'L8', 'alleen de lijn staat er al, uit de productielijst');
     assert.deepStrictEqual(await knoppen(page, 'grdCorrect'), ['Ja', 'Nee']);
     assert.deepStrictEqual(await knoppen(page, 'trechter'), [...TRECHTERS, 'Geen trechter of mes']);
     assert.deepStrictEqual(await knoppen(page, 'ordeNetheid'), OK4);
@@ -260,7 +274,6 @@ async function scenario(naam, fn) {
     await page.click('#open-beneden');
     await page.waitForSelector('#verder');
     assert.strictEqual(await bestaat(page, '#deel section[data-veld] .gekozen'), false, 'geen enkel antwoord vooraf ingevuld');
-    assert.strictEqual(await page.inputValue('#lijn'), 'L8', 'alleen de lijn staat er al, uit de productielijst');
     // alle punten van Beneden staan samen op één scherm
     assert.deepStrictEqual(await page.$$eval('#deel section[data-veld]', (els) => els.map((e) => e.dataset.veld)),
       ['lotZkCorrect', 'allergenenCorrect', 'operatoren', 'checkweger', 'cwGewicht', 'cwPlus', 'cwMin', 'metaaldetector', 'mdUitworp', 'monoDuo', 'snelheid',
@@ -631,9 +644,11 @@ async function scenario(naam, fn) {
     assert.match(await page.textContent('#keuze-kaart'), /staat niet in de opgehaalde gegevens/);
     await page.click('#start-boven');
     await page.waitForSelector('#verder');
+    await kiesLijn(page, 'L3');
     await vulBoven(page);
     await allesVerzonden(page);
     assert.strictEqual(w(5, 'I'), 269999);
+    assert.strictEqual(w(5, 'B'), 'L3');
     assert.deepStrictEqual([w(5, 'BF'), w(5, 'BG'), w(5, 'BH')], ['', '', '']);
     assert.strictEqual(formule(5, 'J'), '=FORMULE_J(I5)', 'de sheet vult product en lot zelf aan');
   });
@@ -842,56 +857,81 @@ async function scenario(naam, fn) {
       const beeld = await createImageBitmap(f.blob);
       return { type: f.blob.type, breedte: beeld.width, hoogte: beeld.height, lijn: f.lijn };
     });
-    assert.deepStrictEqual(foto, { type: 'image/jpeg', breedte: 1600, hoogte: 1067, lijn: 'L7' });
+    assert.deepStrictEqual(foto, { type: 'image/jpeg', breedte: 1600, hoogte: 1067, lijn: 'L8' });
     await page.click('section[data-veld="fotoZk"] img.foto-klein');
     await page.waitForSelector('#foto-groot img');
     await page.click('#foto-groot');
     await page.waitForSelector('#foto-groot', { state: 'detached' });
   });
 
-  await scenario('lijn: voorgevuld uit de productielijst, te wijzigen door de controleur; de keuze blijft na herladen en verversen en komt in kolom B', async (ctx) => {
+  await scenario('lijn: nooit vooraf ingevuld en nooit een combinatie uit de productielijst; verplicht om af te sluiten; de keuze blijft en komt in kolom B', async (ctx) => {
+    // In de productielijst staat bij één order een combinatie, omdat de lijn nog niet vastlag.
+    for (const x of srv.staat.fx.pTab.cellen.values()) if (x.v === 'L7') x.v = 'L1, L3, L5';
     const page = await pagina(ctx);
     await stelIn(page);
     const fB = (r) => srv.staat.fx.tab.cel(r, 2).f;
     const LIJNEN = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'MUL', 'STICKS', 'GELPACK 1', 'GELPACK 2', 'VOLPAK'];
-    await begin(page, '260102', 'boven');
-    assert.strictEqual(await page.inputValue('#lijn'), 'L8', 'de lijn van de productielijst staat er al');
-    assert.deepStrictEqual(await page.$$eval('#lijn option', (os) => os.map((o) => o.textContent)), LIJNEN);
-    await page.selectOption('#lijn', 'GELPACK 1');
-    await page.waitForFunction(() => /planning: L8/.test(document.querySelector('.lijn-keuze').textContent));
+    // zoeken: geen lijn in de lijst en geen filter op lijn
+    await page.goto(srv.appUrl + '#/nieuw');
+    await page.waitForSelector('#zoek-lijst .rij[data-code="260104"]');
+    assert.strictEqual(await bestaat(page, '#lijn-filter'), false);
+    assert.strictEqual(await bestaat(page, '#zoek-lijst .lijn'), false);
+    assert.ok(!/L1, L3, L5|L8/.test(await page.textContent('#zoek-lijst')), 'de lijn uit de productielijst staat niet in de zoeklijst');
+    // de order met de combinatie: blanco, en alleen de zestien lijnen als keuze
+    await begin(page, '260104', 'boven', { lijn: null });
+    assert.strictEqual(await page.$eval('#lijn', (e) => e.selectedOptions[0].textContent), 'Kies…');
+    assert.deepStrictEqual(await page.$$eval('#lijn option', (os) => os.map((o) => o.textContent)), ['Kies…', ...LIJNEN]);
+    // zonder lijn sluit het deel niet af, ook al is elk punt beantwoord
+    await kies(page, 'grdCorrect', 'true'); await kies(page, 'allergeenEtiket', 'true'); await kies(page, 'trechter', '7'); await kies(page, 'ordeNetheid', 'OK');
+    const hash = await page.evaluate(() => location.hash);
+    await page.click('#verder');
+    await page.waitForSelector('.lijn-keuze.open');
+    assert.match(await page.textContent('#open-melding'), /Kies de lijn/);
+    assert.strictEqual(await page.evaluate(() => location.hash), hash);
+    assert.strictEqual(acties('controle'), 0);
+    await kiesLijn(page, 'GELPACK 1');
+    assert.strictEqual(await bestaat(page, '.lijn-keuze.open'), false);
     await page.reload();
     await page.waitForSelector('#lijn');
     assert.strictEqual(await page.inputValue('#lijn'), 'GELPACK 1');
     await page.click('#ververs');
     await page.waitForFunction(() => /Gegevens ververst/.test((document.querySelector('#melding') || {}).textContent || ''));
-    assert.strictEqual(await page.inputValue('#lijn'), 'GELPACK 1', 'verversen zet de gekozen lijn niet terug');
-    await vulBoven(page);
+    assert.strictEqual(await page.inputValue('#lijn'), 'GELPACK 1', 'verversen raakt de gekozen lijn niet aan');
+    await verder(page);
     await allesVerzonden(page);
-    assert.deepStrictEqual([w(5, 'I'), w(5, 'B'), fB(5)], [260102, 'GELPACK 1', '']);
-    assert.match(await page.textContent('#kop-controle'), /GELPACK 1 · 260102/);
-    // bij Beneden blijkt het toch een andere lijn: dezelfde rij krijgt de nieuwe waarde
+    assert.deepStrictEqual([w(5, 'I'), w(5, 'B'), fB(5)], [260104, 'GELPACK 1', '']);
+    assert.match(await page.textContent('#kop-controle'), /GELPACK 1 · 260104/);
+    // bij Beneden staat de gekozen lijn er al; blijkt het toch een andere, dan krijgt dezelfde rij de nieuwe waarde
     await page.click('#open-beneden');
     await page.waitForSelector('#lijn');
     assert.strictEqual(await page.inputValue('#lijn'), 'GELPACK 1');
-    await page.selectOption('#lijn', 'L9');
-    await page.waitForFunction(() => /planning: L8/.test(document.querySelector('.lijn-keuze').textContent) && document.querySelector('#lijn').value === 'L9');
+    await kiesLijn(page, 'L9');
     await vulBeneden(page);
     await allesVerzonden(page, 30000);
     assert.deepStrictEqual([w(5, 'B'), w(5, 'Q'), w(6, 'I')], ['L9', 'AB', '']);
-    assert.match(srv.staat.script.drive.alleBestanden()[0].naam, /_L9_260102_ZK_/);
-    // een controle waar niets aan de lijn gewijzigd is: de lijn van de planning komt als waarde in B
-    await begin(page, '260104', 'boven');
-    assert.strictEqual(await page.inputValue('#lijn'), 'L7');
-    await vulBoven(page);
+    assert.match(srv.staat.script.drive.alleBestanden()[0].naam, /_L9_260104_ZK_/);
+    // ook een pallet vraagt een lijn
+    await begin(page, '50001', 'boven', { tab: 'pallet', lijn: null });
+    await kies(page, 'grdCorrect', 'true'); await kies(page, 'allergeenEtiket', 'true'); await kies(page, 'trechter', '7'); await kies(page, 'ordeNetheid', 'OK');
+    await page.click('#verder');
+    await page.waitForSelector('.lijn-keuze.open');
+    await kiesLijn(page, 'MUL');
+    await verder(page);
     await allesVerzonden(page);
-    assert.deepStrictEqual([w(6, 'I'), w(6, 'B'), fB(6)], [260104, 'L7', '']);
-    // een pallet heeft geen lijn: niets voorgevuld, niet verplicht, de formule van de sheet blijft
-    await begin(page, '50001', 'boven', { tab: 'pallet' });
+    assert.deepStrictEqual([w(6, 'I'), w(6, 'B'), fB(6)], [50001, 'MUL', '']);
+    // een controle uit een vorige versie van de app, met de lijn van de productielijst erin: telt niet als gekozen
+    await begin(page, '260102', 'boven', { lijn: null });
+    await opslag(page, async (db, vraag) => {
+      const os = db.transaction('controles', 'readwrite').objectStore('controles');
+      const c = (await vraag(os.getAll())).find((x) => x.code === '260102');
+      c.lijn = 'L1, L3, L5';
+      delete c.lijnZelf;
+      await vraag(os.put(c));
+    });
+    await page.reload();
+    await page.waitForSelector('#lijn');
     assert.strictEqual(await page.inputValue('#lijn'), '');
-    assert.strictEqual(await page.$eval('#lijn', (e) => e.selectedOptions[0].textContent), 'Kies…');
-    await vulBoven(page);
-    await allesVerzonden(page);
-    assert.deepStrictEqual([w(7, 'I'), fB(7)], [50001, '=FORMULE_B(I7)']);
+    assert.deepStrictEqual(await page.$$eval('#lijn option', (os) => os.map((o) => o.textContent)), ['Kies…', ...LIJNEN]);
   });
 
   await scenario('operatoren: drie aanduiden waarvan één buiten de lijst; eerste kolom = eerste naam, tweede kolom = de rest met een komma; de eigen naam staat er de volgende keer bij', async (ctx) => {
@@ -1006,7 +1046,7 @@ async function scenario(naam, fn) {
     assert.strictEqual(acties('controle') + acties('foto'), 0);
   });
 
-  await scenario('werkmaterialen boven: elk punt OK of een opmerking, offline afsluiten, juiste rij in de sheet, corrigeren', async (ctx) => {
+  await scenario('werkmaterialen boven: alle punten op één scherm, alleen aantikken wat niet OK was, de rest wordt OK; offline afsluiten, juiste rij in de sheet, corrigeren', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);
     const ww = (r, c) => srv.staat.fx.werk.waarde(r, c);
@@ -1014,24 +1054,25 @@ async function scenario(naam, fn) {
     await ctx.setOffline(true);
     await page.click('#tegel-werk');
     await page.waitForSelector('#verder');
-    assert.strictEqual(await bestaat(page, '.gekozen'), false, 'niets vooraf ingevuld');
-    // open punten worden geweigerd
+    assert.deepStrictEqual(await page.$$eval('section.dag-tegel', (els) => els.map((e) => e.dataset.punt)), WERK_KOPPEN.map((k) => k.split('\n')[0]), 'alle punten staan samen op één scherm');
+    assert.deepStrictEqual(await aangetikt(page), [], 'niets vooraf aangetikt');
+    assert.strictEqual(await page.textContent('#verder'), 'Afsluiten: alle 9 punten OK');
+    // aangetikt zonder opmerking: afsluiten weigert en toont welk punt
+    await nietOk(page, 'Werk- & poetsmateriaal L5');
+    assert.strictEqual(await page.textContent('#verder'), 'Afsluiten: 8 OK, 1 niet OK');
     await page.click('#verder');
-    await page.waitForSelector('#open-melding');
-    assert.strictEqual(await page.$$eval('.punt.open', (e) => e.length), 3);
-    let gezien = await vulDagScherm(page);
-    assert.deepStrictEqual(gezien, ['Trechter 1 - Vierkant', 'Trechter 2 - Zwaar', 'Trechter 3 - Klein']);
-    await verder(page);
-    gezien = await vulDagScherm(page, { 'Werk- & poetsmateriaal L5': '' });
-    assert.deepStrictEqual(gezien, ['Inspectie afvulbuizen', 'Werk- & poetsmateriaal L4', 'Werk- & poetsmateriaal L5']);
-    // "Opmerking" zonder tekst is nog open
-    await page.click('#verder');
-    await page.waitForSelector('.punt.open[data-punt="Werk- & poetsmateriaal L5"]');
-    await page.fill('section[data-punt="Werk- & poetsmateriaal L5"] textarea', 'halve maan sleutel weg');
-    await verder(page);
+    await page.waitForSelector('section.dag-tegel.open[data-punt="Werk- & poetsmateriaal L5"]');
+    assert.match(await page.textContent('#open-melding'), /Bij 1 punt ontbreekt de opmerking/);
+    await page.fill('section.dag-tegel[data-punt="Werk- & poetsmateriaal L5"] textarea', 'halve maan sleutel weg');
+    // per ongeluk aangetikt: "Toch OK" zet het terug
+    await nietOk(page, 'Takel 1');
+    await page.click('section.dag-tegel[data-punt="Takel 1"] button[data-waarde="toch-ok"]');
+    await page.waitForSelector('section.dag-tegel[data-punt="Takel 1"][data-niet-ok="false"]');
+    await nietOk(page, 'Mottenval L4', '6 motten');
     await page.reload(); // alles was al bewaard
     await page.waitForSelector('#verder');
-    await vulDagScherm(page, { 'Mottenval L4': '6 motten' });
+    assert.deepStrictEqual(await aangetikt(page), [['Werk- & poetsmateriaal L5', 'halve maan sleutel weg'], ['Mottenval L4', '6 motten']]);
+    assert.strictEqual(await page.textContent('#verder'), 'Afsluiten: 7 OK, 2 niet OK');
     await verder(page);
     await page.waitForSelector('#tegel-werk[data-status="klaar"]');
     await wachtOpTekst(page, /^1 dagcontrole wacht · geen verbinding$/);
@@ -1042,14 +1083,14 @@ async function scenario(naam, fn) {
     assert.deepStrictEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((c) => ww(10, c)), ['OK', 'OK', 'OK', 'OK', 'OK', 'halve maan sleutel weg', 'OK', 'OK', '6 motten', 'Ja']);
     assert.strictEqual(ww(9, 2), '');
     assert.strictEqual(ww(11, 2), '');
-    // corrigeren: zelfde rij
+    // corrigeren: zelfde rij; alleen wat niet OK was, staat aangetikt
     await page.click('#tegel-werk');
     await page.click('#corrigeren');
     await page.waitForSelector('#verder');
+    assert.deepStrictEqual((await aangetikt(page)).map((x) => x[0]), ['Werk- & poetsmateriaal L5', 'Mottenval L4']);
+    await page.click('section.dag-tegel[data-punt="Werk- & poetsmateriaal L5"] button[data-waarde="toch-ok"]');
+    await page.waitForSelector('section.dag-tegel[data-punt="Werk- & poetsmateriaal L5"][data-niet-ok="false"]');
     await verder(page);
-    await page.click('section[data-punt="Werk- & poetsmateriaal L5"] button[data-waarde="ok"]');
-    await page.waitForSelector('section[data-punt="Werk- & poetsmateriaal L5"] button[data-waarde="ok"].gekozen');
-    await verder(page); await verder(page);
     await tot(() => acties('dagcontrole') === 2, 'de correctie is verzonden');
     await allesVerzonden(page);
     assert.strictEqual(ww(10, 7), 'OK');
@@ -1101,7 +1142,7 @@ async function scenario(naam, fn) {
     const eergisteren = iso(dag(-2));
     await page.click('#tegel-werk');
     await page.waitForSelector('#verder');
-    await vulDagScherm(page);
+    await nietOk(page, 'Trechter 1 - Vierkant', 'mes bot');
     // de tablet blijft liggen tot de volgende dag: de begonnen controle is die van gisteren
     await opslag(page, async (db, vraag, d) => {
       const os = db.transaction('dagcontroles', 'readwrite').objectStore('dagcontroles');
@@ -1121,18 +1162,15 @@ async function scenario(naam, fn) {
     await page.goto(srv.appUrl);
     await page.click(`.rij[data-dag="werk:${gisteren}"]`);
     await page.waitForSelector('#dag-eerder');
-    assert.strictEqual(await page.$$eval('button[data-waarde="ok"].gekozen', (e) => e.length), 3, 'de antwoorden van gisteren staan er nog');
-    await verder(page);
-    await vulDagScherm(page, { 'Inspectie afvulbuizen': 'buis 3 gebarsten' });
+    assert.deepStrictEqual(await aangetikt(page), [['Trechter 1 - Vierkant', 'mes bot']], 'wat gisteren aangetikt is, staat er nog');
+    await nietOk(page, 'Inspectie afvulbuizen', 'buis 3 gebarsten');
     // elk antwoord gaat naar de controle van gisteren; er ontstaat geen controle voor vandaag
     assert.deepStrictEqual(await opslag(page, (db, vraag) => vraag(db.transaction('dagcontroles').objectStore('dagcontroles').getAllKeys())), [`magazijn:${eergisteren}`, `werk:${gisteren}`]);
-    await verder(page);
-    await vulDagScherm(page);
     await verder(page);
     await page.waitForSelector('#tegel-werk');
     await tot(() => ww(9, 11) === 'Ja', 'de rij van gisteren is geschreven');
     await allesVerzonden(page);
-    assert.deepStrictEqual([ww(9, 2), ww(9, 5), ww(9, 11)], ['OK', 'buis 3 gebarsten', 'Ja'], 'de rij van gisteren');
+    assert.deepStrictEqual([ww(9, 2), ww(9, 3), ww(9, 5), ww(9, 11)], ['mes bot', 'OK', 'buis 3 gebarsten', 'Ja'], 'de rij van gisteren');
     assert.deepStrictEqual([ww(10, 2), ww(10, 11)], ['', ''], 'de rij van vandaag blijft leeg');
     assert.strictEqual(await bestaat(page, `.rij[data-dag="werk:${gisteren}"]`), false);
     assert.match(await page.textContent('#tegel-werk'), /nog niet gedaan/);
@@ -1159,9 +1197,8 @@ async function scenario(naam, fn) {
     await ctx.setOffline(true);
     await page.click('#tegel-werk');
     await page.waitForSelector('#verder');
-    await vulDagScherm(page); await verder(page);
-    await vulDagScherm(page); await verder(page);
-    await vulDagScherm(page); await verder(page);
+    await verder(page); // niets aangetikt: alle punten OK
+    await page.waitForSelector('#tegel-werk[data-status="klaar"]');
     await wachtOpTekst(page, /^1 dagcontrole wacht/);
     await opslag(page, async (db, vraag, g) => {
       const tx = db.transaction(['dagcontroles', 'wachtrij'], 'readwrite');
@@ -1183,10 +1220,8 @@ async function scenario(naam, fn) {
     await page.click(`.rij[data-dag="werk:${gisteren}"][data-status="klaar"]`);
     await page.click('#corrigeren');
     await page.waitForSelector('#verder');
-    await verder(page); await verder(page);
-    assert.deepStrictEqual(await page.$$eval('section[data-punt]', (els) => els.map((e) => [e.dataset.punt, !!e.querySelector('.gekozen')])).then((x) => x[x.length - 1]), ['Mottenval L4 en L5', false], 'het hernoemde punt is opnieuw te beantwoorden');
-    await vulDagScherm(page);
-    await verder(page);
+    assert.strictEqual(await bestaat(page, 'section.dag-tegel[data-punt="Mottenval L4 en L5"][data-niet-ok="false"]'), true, 'het hernoemde punt staat op het scherm');
+    await verder(page); // opnieuw afsluiten bevestigt ook het hernoemde punt
     await tot(() => ww(9, 11) === 'Ja', 'de rij van gisteren is geschreven');
     await allesVerzonden(page);
     assert.deepStrictEqual([ww(9, 2), ww(9, 10), ww(9, 11)], ['OK', 'OK', 'Ja']);

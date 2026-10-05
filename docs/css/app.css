@@ -271,3 +271,25 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .lijn-keuze { flex: none; display: flex; align-items: center; gap: 8px; font-size: .82rem; color: #c9d6e6; }
 .lijn-keuze select.kies { width: auto; min-width: 118px; max-width: 190px; min-height: 44px; padding: 4px 8px; border-radius: 9px; font-weight: 700; color: var(--inkt); }
 .lijn-keuze select.kies.gekozen { border-color: #fff; background: #fff; }
+.lijn-keuze.open { color: #fff; font-weight: 700; }
+.lijn-keuze.open select.kies { border: 3px solid #ff7b7b; background: #fff8f8; }
+
+/* ---------- Werkmaterialen boven: negatief werken, alle punten op één scherm ---------- */
+.dag-kop h2 { margin: 0 0 2px; font-size: 1.1rem; }
+.dag-kop .stap { margin: 0 0 6px; }
+.dag-raster { columns: 4 280px; column-gap: 10px; }
+.dag-raster > * { break-inside: avoid; }
+.dag-tegel { background: var(--kaart); border: 1px solid var(--lijn); border-radius: 10px; margin: 0 0 5px; overflow: hidden; }
+.dag-naam { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 50px; padding: 5px 10px; text-align: left; background: none; border: 0; }
+.dag-tekst { flex: 1; min-width: 0; }
+.dag-tekst strong { display: block; font-size: .92rem; line-height: 1.2; }
+.dag-tekst small { display: block; font-size: .7rem; line-height: 1.2; color: var(--zacht); }
+.dag-stand { flex: none; font-size: .78rem; font-weight: 700; color: var(--ok); border: 1px solid #94d0a3; background: var(--ok-vlak); border-radius: 999px; padding: 3px 10px; }
+.dag-tegel.niet-ok { border: 2px solid var(--wacht); background: var(--wacht-vlak); }
+.dag-tegel.niet-ok .dag-stand { color: #fff; background: var(--wacht); border-color: var(--wacht); }
+.dag-tegel.niet-ok .dag-naam { cursor: default; }
+.dag-binnen { display: flex; gap: 8px; align-items: stretch; padding: 0 8px 8px; }
+.dag-binnen textarea.invoer { flex: 1; min-height: 52px; padding: 6px 10px; border-radius: 9px; }
+.dag-binnen .keuze { flex: none; min-height: 48px; padding: 4px 10px; font-size: .88rem; border-radius: 9px; }
+.dag-tegel.open { border: 3px solid var(--nok); }
+.dag-slot { max-width: 520px; margin: 8px auto 0; }
