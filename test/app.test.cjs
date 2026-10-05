@@ -731,6 +731,11 @@ async function scenario(naam, fn) {
     assert.ok(!/9\.9\.9/.test(oud));
     await page.click('#zoek-versie');
     await page.waitForFunction(() => /nieuwste versie/.test(document.querySelector('#zoek-versie').textContent));
+    // zonder verbinding zegt de knop waarom het controleren mislukt
+    await ctx.setOffline(true);
+    await page.click('#zoek-versie');
+    await page.waitForFunction(() => /Controleren mislukt: de tablet heeft nu geen verbinding/.test(document.querySelector('#zoek-versie').textContent));
+    await ctx.setOffline(false);
     // zonder de pagina te herladen: de app zoekt zelf en meldt de nieuwe versie
     srv.staat.nieuweVersie = '9.9.9';
     await page.click('#zoek-versie');

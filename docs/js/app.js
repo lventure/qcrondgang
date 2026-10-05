@@ -259,7 +259,7 @@ async function schermInstellingen() {
         const uit = await zoekNieuweVersie({ nu: true });
         knop.disabled = false;
         knop.textContent = uit === 'nieuw' ? 'Nieuwe versie gevonden: tik bovenaan op Bijwerken'
-          : uit === 'geen' ? 'Dit is de nieuwste versie' : 'Controleren mislukt (geen verbinding?)';
+          : uit === 'geen' ? 'Dit is de nieuwste versie' : `Controleren mislukt: ${versieFout || 'onbekende reden'}`;
       } }, 'Op nieuwe versie controleren')),
       h('p', { id: 'inst-offline' }, bewaard === null ? 'App op de tablet bewaard: onbekend' : bewaard >= 13 ? `App op de tablet bewaard: ja (${bewaard} bestanden). Ze start ook zonder verbinding.` : `App op de tablet bewaard: NEE (${bewaard} bestanden). Open de app één keer met verbinding voor je de productiezone ingaat.`),
       h('p', {}, vast === null ? 'Vaste opslag: onbekend' : vast ? 'Vaste opslag: ja, de browser ruimt de gegevens niet zelf op.' : 'Vaste opslag: nee. Installeer de app op het startscherm; dan kent Chrome dit meestal toe.'),
@@ -1328,14 +1328,20 @@ async function bewaardeBestanden() {
  * open staan. Daarom ook telkens als de app weer in beeld komt, hoogstens één
  * keer per uur. Geeft 'nieuw', 'geen' of 'mislukt' terug.
  */
+let versieFout = ''; // waarom de laatste controle op een nieuwe versie mislukte
+
 async function zoekNieuweVersie({ nu = false } = {}) {
-  if (!swReg) return 'mislukt';
+  versieFout = '';
+  if (!swReg) { versieFout = 'de app is nog niet op de tablet bewaard; sluit de app en open ze opnieuw met verbinding'; return 'mislukt'; }
   if (!nu && Date.now() - laatsteVersieCheck < 60 * 60 * 1000) return 'geen';
-  if (!navigator.onLine) return 'mislukt';
+  if (!navigator.onLine) { versieFout = 'de tablet heeft nu geen verbinding'; return 'mislukt'; }
   laatsteVersieCheck = Date.now();
   try {
     await swReg.update();
   } catch (e) {
+    // Meestal: geen verbinding, of de nieuwe versie staat nog maar half online
+    // (de eerste minuten na het uploaden).
+    versieFout = `${(e && e.message) || e}. Staat de nieuwe versie nog maar net online, probeer dan over een paar minuten opnieuw`;
     return 'mislukt';
   }
   return swReg.installing || swReg.waiting ? 'nieuw' : 'geen';
