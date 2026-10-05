@@ -53,7 +53,9 @@ export const VELDEN = {
   cwMin: { deel: 'beneden', soort: 'keuze', label: 'Controle -1 OK?', nvtAls: 'checkweger' },
   metaaldetector: { deel: 'beneden', soort: 'keuze', label: 'Metaaldetector?' },
   mdUitworp: { deel: 'beneden', soort: 'keuze', label: 'Uitworp testplaatjes?', nvtAls: 'metaaldetector' },
-  monoDuo: { deel: 'beneden', soort: 'keuze', label: 'Mono (1) of Duo (2)?', reserve: ['1', '2'] },
+  // De kolom heeft in de sheet geen keuzelijst (alleen getallen). In de sheet
+  // komt het getal; de knop toont er de naam bij.
+  monoDuo: { deel: 'beneden', soort: 'keuze', label: 'Mono (1), Duo (2) of Sticks (5)?', reserve: ['1', '2', '5'], reserveTekst: { 1: '1 Mono', 2: '2 Duo', 5: '5 Sticks' } },
   snelheid: { deel: 'beneden', soort: 'getal', label: 'Snelheid (slagen/min)' },
   cProduct: { deel: 'beneden', soort: 'keuze', label: 'Product' },
   cHoudbaarheid: { deel: 'beneden', soort: 'keuze', label: 'Houdbaarheid' },
@@ -78,7 +80,7 @@ export const GROEPEN = {
     { titel: 'Checkweger', toon: [], velden: ['checkweger', 'cwGewicht', 'cwPlus', 'cwMin'] },
     { titel: 'Metaaldetector', toon: [], velden: ['metaaldetector', 'mdUitworp'] },
     // samen: deze punten horen bij elkaar en staan altijd onder elkaar in dezelfde kolom.
-    { titel: 'Mono of duo en snelheid', toon: [], velden: ['monoDuo', 'snelheid'], samen: true },
+    { titel: 'Mono, duo of sticks en snelheid', toon: [], velden: ['monoDuo', 'snelheid'], samen: true },
     { titel: 'Product, houdbaarheid, gewicht, ZK en DI', toon: ['product', 'lotZk'], velden: ['cProduct', 'cHoudbaarheid', 'cGewicht', 'cZk', 'cDi'] },
     { titel: 'DS/pallet, etiket, documenten en allergenenbeleid', toon: [], velden: ['cDs', 'cEtiket', 'cDocumenten', 'cAllergenen', 'opmBeneden'] },
     { titel: "Foto's", toon: [], velden: [], fotos: true }
@@ -123,9 +125,12 @@ export function keuzes(id, snapshot) {
   if (v.soort === 'vakje') return [{ waarde: true, tekst: 'Ja' }, { waarde: false, tekst: 'Nee' }];
   if (v.soort !== 'keuze') return [];
   const uitSheet = snapshot && snapshot.velden && snapshot.velden[id] ? snapshot.velden[id].keuzes : null;
-  const lijst = uitSheet && uitSheet.length ? uitSheet : v.reserve;
+  const vanSheet = !!(uitSheet && uitSheet.length);
+  const lijst = vanSheet ? uitSheet : v.reserve;
   if (!lijst || !lijst.length) return null;
-  const uit = lijst.map((k) => ({ waarde: String(k), tekst: String(k) }));
+  // Een keuzelijst uit de sheet wordt letterlijk getoond; alleen de eigen reserve krijgt een naam erbij.
+  const naam = (k) => (!vanSheet && v.reserveTekst && v.reserveTekst[k]) || String(k);
+  const uit = lijst.map((k) => ({ waarde: String(k), tekst: naam(String(k)) }));
   if (v.leegKeuze) uit.push({ waarde: '', tekst: v.leegKeuze, leeg: true });
   return uit;
 }

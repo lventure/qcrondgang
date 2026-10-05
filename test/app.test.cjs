@@ -5,7 +5,7 @@ const assert = require('assert');
 // Eenmalig: npm install playwright && npx playwright install chromium
 const { chromium } = require(process.env.PLAYWRIGHT_PAD || 'playwright');
 const { start } = require('./server.cjs');
-const { letterNaarKolom } = require('./nep-apps-script.cjs');
+const { letterNaarKolom, lijstRegel } = require('./nep-apps-script.cjs');
 const { OPERATOREN, OK3, OK4, JA_NEE, TRECHTERS, WERK_KOPPEN, MAGAZIJN_PUNTEN, dag, iso } = require('./fixture.cjs');
 
 let srv;
@@ -292,7 +292,7 @@ async function scenario(naam, fn) {
     assert.deepStrictEqual(await knoppen(page, 'cwGewicht'), OK3);
     assert.deepStrictEqual(await knoppen(page, 'metaaldetector'), JA_NEE);
     assert.deepStrictEqual(await knoppen(page, 'mdUitworp'), OK3);
-    assert.deepStrictEqual(await knoppen(page, 'monoDuo'), ['1', '2']);
+    assert.deepStrictEqual(await knoppen(page, 'monoDuo'), ['1 Mono', '2 Duo', '5 Sticks']);
     assert.strictEqual(await page.inputValue('[data-invoer="snelheid"]'), '');
     for (const v of ['cProduct', 'cHoudbaarheid', 'cGewicht', 'cZk', 'cDi', 'cDs', 'cEtiket', 'cDocumenten', 'cAllergenen']) assert.deepStrictEqual(await knoppen(page, v), OK4);
     await kiesOperatoren(page, ['CD', 'Interim/Flexi']);
@@ -524,6 +524,30 @@ async function scenario(naam, fn) {
     assert.deepStrictEqual(['T', 'U', 'V'].map((l) => [w(5, l), formule(5, l)]), [['NVT', '=IF(S5="nee";"NVT";)'], ['NVT', '=IF(S5="nee";"NVT";)'], ['NVT', '=IF(S5="nee";"NVT";)']]);
     assert.strictEqual(w(5, 'S'), 'NEE');
     assert.strictEqual(w(6, 'I'), '', 'correctie komt in dezelfde rij');
+  });
+
+  await scenario('Mono, Duo of Sticks: de kolom heeft geen keuzelijst, de app biedt 1, 2 en 5 met de naam erbij en schrijft het getal; krijgt de kolom later een keuzelijst, dan toont de app exact die lijst', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await begin(page, '260102', 'beneden', { lijn: 'STICKS' });
+    assert.deepStrictEqual(await knoppen(page, 'monoDuo'), ['1 Mono', '2 Duo', '5 Sticks']);
+    assert.strictEqual(await gekozen(page, 'monoDuo'), null, 'niets vooraf gekozen, ook niet bij de lijn STICKS');
+    await vulBenedenPunten(page);
+    await kies(page, 'monoDuo', '5');
+    assert.strictEqual(await gekozen(page, 'monoDuo'), '5 Sticks');
+    await verder(page);
+    await page.waitForSelector('#open-beneden');
+    await allesVerzonden(page);
+    assert.strictEqual(w(5, 'Y'), 5, 'in de sheet staat het getal 5, niet de tekst van de knop');
+    assert.strictEqual(w(5, 'B'), 'STICKS');
+    // De sheet krijgt een keuzelijst voor de kolom: die gaat voor, letterlijk.
+    for (let r = 5; r <= 8; r++) srv.staat.fx.tab.cel(r, letterNaarKolom('Y'), true).dv = lijstRegel(['1', '2', '5', '8']);
+    await page.goto(srv.appUrl);
+    await page.waitForSelector('#ververs');
+    await page.click('#ververs');
+    await page.waitForFunction(() => /Gegevens ververst om \d\d:\d\d/.test((document.querySelector('#melding.ok') || {}).textContent || ''));
+    await begin(page, '260103', 'beneden');
+    assert.deepStrictEqual(await knoppen(page, 'monoDuo'), ['1', '2', '5', '8']);
   });
 
   await scenario('verversen midden in de rondgang: invoer en wachtrij blijven, lijst is bijgewerkt, verschil wordt getoond', async (ctx) => {

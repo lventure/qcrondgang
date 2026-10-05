@@ -65,7 +65,7 @@ function bereidRijVoor(tab, r) {
   ['S', 'W'].forEach((l) => zet(l, { dv: lijstRegel(JA_NEE) }));
   ['T', 'U', 'V'].forEach((l) => zet(l, { f: `=IF(S${r}="nee";"NVT";)`, dv: lijstRegel(OK3) }));
   zet('X', { f: `=if(W${r}="nee";"NVT";)`, dv: lijstRegel(OK3) });
-  zet('Y', { dv: lijstRegel(['1', '2']) });
+  // Y (Mono/Duo/Sticks) heeft in de echte sheet geen keuzelijst: er staan gewoon getallen (1, 2 of 5).
   ['AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH', 'AI', 'AJ', 'AT'].forEach((l) => zet(l, { dv: lijstRegel(OK4) }));
   zet('AS', { dv: lijstRegel(TRECHTERS) });
 }
