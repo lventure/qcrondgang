@@ -750,6 +750,41 @@ async function scenario(naam, fn) {
     assert.strictEqual(await page.inputValue('[data-invoer="opmBoven"]'), 'voor de update');
   });
 
+  await scenario('het versienummer staat ook in sw.js zelf en is gelijk aan js/versie.js (anders kan een tablet niet bijwerken)', async () => {
+    const fs = require('fs');
+    const path = require('path');
+    const docs = path.join(__dirname, '..', 'docs');
+    const app = (fs.readFileSync(path.join(docs, 'js', 'versie.js'), 'utf8').match(/APP_VERSIE = '([^']+)'/) || [])[1];
+    const sw = fs.readFileSync(path.join(docs, 'sw.js'), 'utf8');
+    assert.ok(app, 'versienummer in js/versie.js');
+    assert.strictEqual((sw.match(/SW_VERSIE = '([^']+)'/) || [])[1], app, 'sw.js en js/versie.js dragen hetzelfde versienummer');
+    assert.ok(!/versie\.js'/.test(sw.replace(/'\.\/js\/versie\.js'\s*,/, '')), 'sw.js haalt het versienummer niet uit een ander bestand');
+  });
+
+  await scenario('tablet die vastzat (nieuwe versie online, sw.js ongewijzigd, zoals voor 1.6.2): een uitgave waarin sw.js wel wijzigt, komt zonder herinstallatie binnen', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await page.goto(srv.appUrl + '#/instellingen');
+    await page.waitForSelector('#inst-versie');
+    const oud = await page.textContent('#inst-versie');
+    // Zo stonden de versies tot en met 1.6.1 online: alleen de geïmporteerde bestanden anders.
+    srv.staat.nieuweVersie = '9.9.8';
+    srv.staat.nieuweVersieZonderSw = true;
+    await page.click('#zoek-versie');
+    await page.waitForFunction(() => /Controleren mislukt|nieuwste versie/.test(document.querySelector('#zoek-versie').textContent) || /Er is een nieuwe versie/.test(document.querySelector('#balk').textContent), null, { timeout: 15000 });
+    const eerst = await page.textContent('#zoek-versie');
+    // Chrome 141 weigert dit ("ServiceWorker cannot be started"). Doet een latere Chrome dat niet meer, dan is dat ook goed.
+    if (/Controleren mislukt/.test(eerst)) assert.match(eerst, /ServiceWorker/, 'de knop toont de echte reden');
+    assert.strictEqual(await page.textContent('#inst-versie'), oud);
+    // De volgende uitgave wijzigt sw.js zelf: nu lukt het, ook na de mislukte pogingen.
+    srv.staat.nieuweVersie = '9.9.9';
+    srv.staat.nieuweVersieZonderSw = false;
+    await page.click('#zoek-versie');
+    await page.waitForFunction(() => /Er is een nieuwe versie/.test(document.querySelector('#balk').textContent), null, { timeout: 15000 });
+    await page.click('#balk >> text=Bijwerken');
+    await page.waitForFunction(() => /9\.9\.9/.test((document.querySelector('#inst-versie') || {}).textContent || ''), null, { timeout: 15000 });
+  });
+
   await scenario('foto\'s: verplicht om Beneden af te sluiten, offline bewaard, na herladen nog aanwezig, link in AK en AL', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);

@@ -1,11 +1,17 @@
 // Service worker: bewaart de app zelf op de tablet en verzendt de wachtrij ook
 // als de app gesloten is (Background Sync van Chrome).
 // Alle paden zijn relatief; de scope is de map waarin dit bestand staat.
-import { APP_VERSIE } from './js/versie.js';
 import { verwerk, SYNC_TAG } from './js/sync.js';
 
+// Het versienummer staat hier EN in js/versie.js; ze moeten gelijk zijn (de test
+// bewaakt dat). Het moet hier staan omdat dit bestand bij elke nieuwe versie
+// zelf moet wijzigen: verandert alleen een geïmporteerd bestand, dan mislukt
+// het bijwerken in Chrome ("ServiceWorker cannot be started") en blijft de
+// tablet op de oude versie hangen.
+const SW_VERSIE = '1.6.2';
+
 const VOORVOEGSEL = 'qc-rondgang-';
-const CACHE = VOORVOEGSEL + APP_VERSIE;
+const CACHE = VOORVOEGSEL + SW_VERSIE;
 const BESTANDEN = [
   './',
   './index.html',

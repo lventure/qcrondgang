@@ -21,6 +21,7 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
     html: 0,           // zoveel antwoorden zijn een HTML-foutpagina
     preflights: 0,     // OPTIONS-verzoeken (moet 0 blijven)
     nieuweVersie: '',  // nabootsen dat er een nieuwe versie van de app online staat
+    nieuweVersieZonderSw: false,
     verzoeken: [],     // alle ontvangen acties
     reset(opties) {
       this.fx = maakFixture(opties);
@@ -28,7 +29,7 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
       this.script = laadScript({ actief: this.fx.qc, opId: this.fx.opId, sheetsDienst: process.env.QC_SHEETS === '1' });
       this.script.roep('installeer');
       this.sleutel = this.script.props.SLEUTEL;
-      this.verlies = 0; this.verliesActie = 'controle'; this.weiger = []; this.html = 0; this.preflights = 0; this.verzoeken = []; this.nieuweVersie = '';
+      this.verlies = 0; this.verliesActie = 'controle'; this.weiger = []; this.html = 0; this.preflights = 0; this.verzoeken = []; this.nieuweVersie = ''; this.nieuweVersieZonderSw = false;
     }
   };
   staat.reset();
@@ -43,7 +44,9 @@ function start({ appPoort = 8787, scriptPoort = 8788 } = {}) {
     let inhoud = fs.readFileSync(bestand);
     // Nabootsen dat er een nieuwe versie van de app online staat.
     if (staat.nieuweVersie && rel === 'js/versie.js') inhoud = Buffer.from(inhoud.toString('utf8').replace(/APP_VERSIE = '[^']+'/, "APP_VERSIE = '" + staat.nieuweVersie + "'"));
-    if (staat.nieuweVersie && rel === 'sw.js') inhoud = Buffer.concat([inhoud, Buffer.from('\n// build ' + staat.nieuweVersie + '\n')]);
+    // Net als bij een echte uitgave wijzigt in sw.js alleen het versienummer.
+    // nieuweVersieZonderSw bootst de fout van vóór 1.6.2 na: sw.js blijft gelijk.
+    if (staat.nieuweVersie && !staat.nieuweVersieZonderSw && rel === 'sw.js') inhoud = Buffer.from(inhoud.toString('utf8').replace(/SW_VERSIE = '[^']+'/, "SW_VERSIE = '" + staat.nieuweVersie + "'"));
     res.end(inhoud);
   });
 
