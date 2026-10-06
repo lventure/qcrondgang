@@ -5,6 +5,12 @@ import { roep } from './api.js';
 import { bouwVerzoek, bouwDagVerzoek, FOTOSOORTEN } from './model.js';
 
 const WACHT_S = [5, 15, 60, 120]; // oplopende wachttijd, daarna elke 2 minuten
+
+// Elk item krijgt een eigen, oplopend tijdstip. Zo worden delen die samen
+// afgesloten zijn (de rondgang boven) verzonden in de volgorde van de lijst,
+// ook als ze in dezelfde milliseconde in de wachtrij komen.
+let laatsteSinds = 0;
+const nuUniek = () => { laatsteSinds = Math.max(Date.now(), laatsteSinds + 1); return laatsteSinds; };
 const SLOT = 'qc-rondgang-sync';
 export const SYNC_TAG = 'qc-wachtrij';
 
@@ -19,7 +25,7 @@ const itemId = (appId, deel) => `controle:${appId}:${deel}`;
 export async function inWachtrij(appId, deel) {
   await db.zet('wachtrij', {
     id: itemId(appId, deel), soort: 'controle', appId, deel,
-    sinds: Date.now(), pogingen: 0, laatsteFout: null, geenVerbinding: false, nietVoor: 0
+    sinds: nuUniek(), pogingen: 0, laatsteFout: null, geenVerbinding: false, nietVoor: 0
   });
   meld('wachtrij');
   vraagAchtergrondSync();
@@ -30,7 +36,7 @@ export async function uitWachtrij(appId, deel) {
   meld('wachtrij');
 }
 
-const nieuwItem = (velden) => ({ sinds: Date.now(), pogingen: 0, laatsteFout: null, geenVerbinding: false, nietVoor: 0, ...velden });
+const nieuwItem = (velden) => ({ sinds: nuUniek(), pogingen: 0, laatsteFout: null, geenVerbinding: false, nietVoor: 0, ...velden });
 
 /** Zet een foto in de wachtrij. De foto gaat pas weg nadat de controle zelf verzonden is. */
 export async function fotoInWachtrij(fotoId, appId) {

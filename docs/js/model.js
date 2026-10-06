@@ -206,6 +206,35 @@ export function zetAntwoord(antwoorden, id, waarde) {
   });
 }
 
+/**
+ * Het nummer van een trechter. kop: uit de kop van een punt van Werkmaterialen
+ * ("Trechter 3 - Klein"); anders uit het antwoord op "Trechter + mes?" ("3").
+ */
+export function trechterNummer(tekst, kop = false) {
+  const m = String(tekst == null ? '' : tekst).match(kop ? /^\s*trechter\s*(\d+)/i : /^\s*(\d+)(?!\d)/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Welke trechters zijn op die dag in de rondgang boven bij een productie
+ * aangeduid? Geeft per nummer waar: [{ kort: "L3", tekst: "L3 (260713)" }].
+ * Een productie zonder gekozen lijn staat er met haar code.
+ */
+export function trechtersInGebruik(controles, datum) {
+  const uit = new Map();
+  controles.filter((c) => c.datum === datum).sort((a, b) => a.aangemaaktOm - b.aangemaaktOm).forEach((c) => {
+    const nr = trechterNummer(c.delen.boven.antwoorden.trechter);
+    if (nr === null) return;
+    const lijn = lijnVan(c);
+    const waar = { kort: lijn || String(c.code), tekst: lijn ? `${lijn} (${c.code})` : String(c.code) };
+    if (!uit.has(nr)) uit.set(nr, []);
+    // Twee producties op dezelfde lijn: de lijn staat één keer in het label.
+    const al = uit.get(nr).find((x) => x.kort === waar.kort);
+    if (al) { if (!al.tekst.includes(String(c.code))) al.tekst = al.tekst.replace(/\)$/, `, ${c.code})`); } else uit.get(nr).push(waar);
+  });
+  return uit;
+}
+
 export function vandaag(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;

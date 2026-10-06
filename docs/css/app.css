@@ -298,3 +298,69 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .punt.regel.met-tekst { flex-wrap: wrap; }
 .punt.regel.met-tekst > textarea.invoer { flex: 1 1 100%; min-height: 50px; margin: 1px 4px 4px 0; padding: 4px 10px; border-radius: 9px; }
 .deel-raster[data-deel="dag"] .punt.regel .keuze { min-width: 66px; }
+
+/* ---------- Rondgang: alle producties van vandaag onder elkaar, Boven in de rij ---------- */
+.rb-top { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin: 2px 0 6px; }
+.rb-top h2 { margin: 0; font-size: 1.1rem; flex: none; }
+.rb-top .filter { margin: 0; flex: none; }
+.rb-top .invoer { flex: 1 1 300px; width: auto; min-height: 46px; padding: 6px 12px; border-radius: 10px; }
+#zoek-lijst:not(:empty) { margin: 0 0 10px; padding: 4px 10px; background: #e8f0fe; border: 1px solid #a8c4f5; border-radius: var(--straal); }
+#zoek-lijst .rij { min-height: 52px; padding: 6px 12px; margin: 6px 0; }
+#zoek-lijst .melding, #zoek-lijst .kaart { margin: 6px 0; }
+
+.rb-rij { background: var(--kaart); border: 1px solid var(--lijn); border-left: 6px solid var(--merk); border-radius: var(--straal); padding: 6px 10px 8px; margin: 0 0 8px; }
+.rb-rij.dicht { border-left-color: var(--ok); background: #f8faf8; }
+.rb-rij.open { border: 3px solid var(--nok); border-left-width: 6px; background: #fff8f8; }
+.rb-kop { display: flex; align-items: center; gap: 10px; }
+.rb-kop .lijn-keuze { color: var(--zacht); }
+.rb-kop .lijn-keuze select.kies { color: var(--inkt); }
+.rb-kop .lijn-keuze select.kies.gekozen { border-color: var(--merk); background: var(--merk); color: #fff; }
+.rb-kop .lijn-keuze.open { color: var(--nok); }
+.rb-kop .lijn-keuze.open select.kies { border: 3px solid var(--nok); }
+.rb-kop > .lijn { min-width: 118px; padding: 10px 8px; }
+.rb-naam.rij { flex: 1; min-width: 0; margin: 0; padding: 2px 6px; min-height: 44px; border: 0; background: none; }
+.rb-naam .chips { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
+.chip.volledig { background: #e8f0fe; border-color: #a8c4f5; color: #0a3d91; }
+.rb-kop .knop.rb-beneden { flex: none; min-height: 44px; padding: 4px 14px; font-size: .92rem; border-radius: 10px; }
+.rb-kop .knop.rb-beneden.gedaan { border-color: var(--lijn); color: var(--zacht); }
+.rb-info { display: flex; flex-wrap: wrap; gap: 0 18px; margin: 3px 0 5px; font-size: .84rem; line-height: 1.3; color: var(--zacht); }
+.rb-info b { color: var(--inkt); overflow-wrap: anywhere; }
+.rb-weg { flex: none; width: 44px; height: 44px; border: 1px solid var(--lijn); border-radius: 10px; background: #fff; color: var(--zacht); font-size: 1rem; font-weight: 700; }
+/* De lijst is net verschoven: heel even geen tikken in de rijen (zie rbSchild in app.js). */
+.rondgang.schild .rb-rij, .rondgang.schild .rb-slot { pointer-events: none; }
+.rb-wijziging.melding { margin: 4px 0; padding: 6px 12px; font-size: .88rem; }
+.rb-wijziging .knoppen { margin-top: 6px; }
+.rb-wijziging .knop { flex: none; min-height: 44px; padding: 4px 16px; }
+
+.rb-punten { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px 14px; }
+.rb-punt { display: flex; flex-direction: column; justify-content: space-between; gap: 3px; max-width: 300px; padding: 2px 4px; border: 2px solid transparent; border-radius: 10px; }
+.rb-punt h4 { margin: 0; font-size: .72rem; line-height: 1.2; font-weight: 600; color: var(--zacht); overflow-wrap: break-word; }
+.rb-punt .keuzes { margin: 0; gap: 5px; flex-wrap: nowrap; }
+.rb-punt .keuze { flex: none; min-width: 58px; min-height: 44px; padding: 4px 8px; font-size: .92rem; border-radius: 9px; }
+.rb-punt select.kies { width: 190px; min-height: 44px; padding: 4px 8px; border-radius: 9px; font-weight: 700; }
+.rb-punt select.kies.gekozen { border-color: var(--actie); background: #e8f0fe; }
+.rb-punt.tekst { flex: 1 1 240px; max-width: none; }
+.rb-punt.tekst textarea.invoer { min-height: 44px; height: 44px; padding: 8px 10px; border-radius: 9px; }
+/* Een lange opmerking: het vak groeit mee, waar de browser dat kan. */
+@supports (field-sizing: content) { .rb-punt.tekst textarea.invoer { field-sizing: content; height: auto; max-height: 132px; } }
+.rb-punt.open { border-color: var(--nok); background: #fff; }
+.rb-punt.open h4 { color: var(--nok); }
+
+.rb-vast { display: flex; align-items: center; gap: 12px; }
+.rb-vast p { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 0 18px; font-size: .88rem; color: var(--zacht); }
+.rb-vast b { color: var(--inkt); overflow-wrap: anywhere; }
+.rb-vast .knop.rb-corrigeer { flex: none; min-height: 44px; padding: 4px 14px; font-size: .88rem; border-radius: 10px; border-color: var(--lijn); color: var(--zacht); }
+
+.rb-slot { position: sticky; bottom: 0; z-index: 5; padding: 6px 0 calc(6px + env(safe-area-inset-bottom)); background: var(--vlak); }
+.rb-slot .melding { margin: 0 0 5px; padding: 6px 12px; font-size: .88rem; }
+.rb-slot .knop { min-height: 52px; }
+.rondgang > h2 { font-size: 1.05rem; margin: 14px 0 4px; }
+
+/* ---------- Werkmaterialen: op welke lijn een trechter vandaag in gebruik is ---------- */
+.dag-gebruik { flex: 0 1 auto; min-width: 0; max-width: 45%; font-size: .74rem; line-height: 1.2; font-weight: 700; color: #0a3d91; background: #e8f0fe; border: 1px solid #a8c4f5; border-radius: 12px; padding: 3px 8px; text-align: center; overflow-wrap: anywhere; }
+
+/* Staande tablet: de statussen onder de naam, zodat de productnaam leesbaar blijft. */
+@media (max-width: 900px) {
+  .rb-naam.rij { flex-wrap: wrap; gap: 2px 10px; }
+  .rb-naam .chips { flex: 1 1 100%; justify-content: flex-start; }
+}

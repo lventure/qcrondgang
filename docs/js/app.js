@@ -22,7 +22,13 @@ const SNAPSHOT_WACHT_MS = 150000; // de bronsheets zijn zwaar; intussen blijft d
 let swReg = null;           // registratie van de service worker
 let laatsteVersieCheck = Date.now();
 let bevestigWeg = null;    // app-ID (of id van een dagcontrole) waarvoor "verwijderen" om bevestiging vraagt
-const nieuw = { tab: 'order', zoek: '', gekozen: null }; // toestand van "Nieuwe controle"
+const nieuw = { tab: 'order', zoek: '', gekozen: null, alles: false }; // toestand van "Productie toevoegen" in de rondgang
+let rbToon = null;         // app-ID van de rij die na het tekenen van de rondgang in beeld moet komen
+let rbBericht = null;      // { soort, tekst, tot }: wat "Boven afsluiten" net gedaan heeft
+let rbRood = new Set();    // app-ID's van de rijen die bij "Boven afsluiten" niet afgesloten konden worden
+let rbSchildTot = 0;       // tot dan nemen de rijen geen tikken aan (de lijst is net verschoven)
+let rbBezig = false;       // toevoegen of afsluiten loopt: een tweede tik telt niet
+let naToon = null;         // eenmalig uit te voeren nadat het scherm getekend is
 const objectUrls = [];     // adressen van getoonde foto's, vrij te geven na het tekenen
 const FOTO_LANGSTE_ZIJDE = 1600;
 const FOTO_KWALITEIT = 0.8;
@@ -148,8 +154,9 @@ async function werkBalkBij() {
 
 function terug() {
   const r = route();
-  if (r[0] === 'c' && r.length >= 3) return ga(`#/c/${r[1]}`);
-  if (r[0] === 'c' || r[0] === 'nieuw') return ga('#/controles');
+  // Een deel dat vanuit de rondgang geopend is, gaat daar ook naar terug.
+  if (r[0] === 'c' && r.length >= 3) { if (r[3] === 'lijst') rbToon = r[1]; return ga(r[3] === 'lijst' ? '#/controles' : `#/c/${r[1]}`); }
+  if (r[0] === 'c') { rbToon = r[1]; return ga('#/controles'); }
   if (r[0] === 'dag' && Number(r[3]) > 0) return ga(`#/dag/${r[1]}/${r[2]}/${Number(r[3]) - 1}`);
   return ga('#/');
 }
@@ -166,7 +173,7 @@ function planSync(t) {
 /* Tekenen                                                             */
 /* ------------------------------------------------------------------ */
 
-async function toon({ behoudScroll = false } = {}) {
+async function toon({ behoudScroll = false, achtergrond = false } = {}) {
   const mijn = ++renderTeller;
   const vorigeUrls = objectUrls.splice(0); // foto's van het vorige scherm
   const y = window.scrollY;
@@ -175,8 +182,7 @@ async function toon({ behoudScroll = false } = {}) {
   try {
     if (!ingesteld || r[0] === 'instellingen') inhoud = await schermInstellingen();
     else if (r.length === 0) inhoud = await schermStart();
-    else if (r[0] === 'controles') inhoud = await schermControles();
-    else if (r[0] === 'nieuw') inhoud = await schermNieuw();
+    else if (r[0] === 'controles' || r[0] === 'nieuw') inhoud = await schermControles();
     else if (r[0] === 'einde') inhoud = await schermEinde();
     else if (r[0] === 'c') inhoud = await schermControle(r[1], r[2], r[3]);
     else if (r[0] === 'dag' && M.DAGSOORTEN.includes(r[1])) inhoud = await schermDag(r[1], r[2], Number(r[3]) || 0);
@@ -188,10 +194,18 @@ async function toon({ behoudScroll = false } = {}) {
   const kop = melding ? h('div', { class: `melding ${melding.soort}`, id: 'melding', role: 'status' }, melding.tekst) : null;
   // Staat de cursor in een invoerveld, dan staat hij er na het tekenen opnieuw.
   const actief = document.activeElement;
+  // Opnieuw tekenen op eigen initiatief (de synchronisatie meldt iets) mag een
+  // keuzelijst die de controleur intussen opende niet onder zijn vinger vervangen.
+  if (achtergrond && actief && actief.tagName === 'SELECT' && $scherm.contains(actief)) {
+    vorigeUrls.forEach((u) => URL.revokeObjectURL(u));
+    await werkBalkBij();
+    if (r[0] === 'controles') werkStandenBij();
+    return;
+  }
   const veld = actief && $scherm.contains(actief) ? actief.getAttribute('data-invoer') || (actief.id === 'zoek' ? '#zoek' : null) : null;
   const getypt = veld ? actief.value : null;
   $scherm.replaceChildren(...[kop, inhoud].flat(Infinity).filter(Boolean));
-  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster, .dag-raster'));
+  $scherm.classList.toggle('breed', !!$scherm.querySelector('.deel-raster, .dag-raster, .rondgang'));
   vorigeUrls.forEach((u) => URL.revokeObjectURL(u));
   if (veld) {
     const terug = veld === '#zoek' ? document.getElementById('zoek') : $scherm.querySelector(`[data-invoer="${veld}"]`);
@@ -202,6 +216,7 @@ async function toon({ behoudScroll = false } = {}) {
     }
   }
   window.scrollTo(0, behoudScroll ? y : 0);
+  if (naToon) { const f = naToon; naToon = null; f(); }
   await werkBalkBij();
 }
 
@@ -309,7 +324,7 @@ function waarschuwingen() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Productiecontroles: lijst                                           */
+/* Productiecontroles: de rondgang van vandaag                         */
 /* ------------------------------------------------------------------ */
 
 function chip(deel, d) {
@@ -323,22 +338,290 @@ function rijControle(c) {
     h('span', { class: 'chips' }, M.DELEN.map((d) => chip(d, c.delen[d]))));
 }
 
-async function schermControles() {
-  const alle = (await db.alle('controles')).sort((a, b) => a.aangemaaktOm - b.aangemaaktOm);
-  const vandaag = alle.filter((c) => c.datum === M.vandaag());
-  const eerder = alle.filter((c) => c.datum !== M.vandaag() && M.DELEN.some((d) => c.delen[d].status !== 'verzonden'));
-  return [
-    h('h2', {}, 'Productiecontroles'),
-    h('button', { class: 'knop hoofd breed', id: 'nieuwe-controle', onclick: () => { nieuw.gekozen = null; nieuw.zoek = ''; ga('#/nieuw'); } }, '+ Nieuwe controle'),
-    h('h2', {}, 'Vandaag'),
-    vandaag.length ? vandaag.map(rijControle) : h('p', { class: 'zacht' }, 'Nog geen controles vandaag.'),
-    eerder.length ? [h('h2', {}, 'Onafgewerkt van eerdere dagen'), eerder.map((c) => [h('p', { class: 'klein zacht' }, datumLang(c.datum)), rijControle(c)])] : null
-  ];
+/** Stand van Boven voor een rij van de rondgang: open, bezig (nog niet volledig), volledig, klaar of verzonden. */
+function bovenStand(c) {
+  const b = c.delen.boven;
+  if (b.status !== 'bezig') return b.status;
+  return M.openPunten('boven', b).length || !M.lijnVan(c) ? 'bezig' : 'volledig';
 }
 
-/* ------------------------------------------------------------------ */
-/* Nieuwe controle                                                     */
-/* ------------------------------------------------------------------ */
+/**
+ * Zijn de gegevens die bij dit deel nagekeken worden (lot, THT, allergenen)
+ * gewijzigd bij het verversen, zonder dat de controleur op "Gezien" getikt heeft?
+ */
+const wijzigingOpen = (c, deel) => !!c.wijziging && M.GEZIEN[deel].some((k) => (c.wijziging.oud[k] || '') !== (c.opzoek[k] || ''));
+
+/** Een rij waar nog niets in gebeurd is, mag met één tik weer uit de lijst. */
+function isOnaangeroerd(c) {
+  return !M.lijnVan(c) && magVerwijderd(c) && M.DELEN.every((d) => {
+    const x = c.delen[d];
+    return x.status === 'open' && !Object.keys(x.antwoorden).length && !Object.values(x.fotos || {}).some((f) => f && (f.fotoId || f.nvt));
+  });
+}
+
+/**
+ * Na een tik die de lijst doet verschuiven (een productie erbij of eruit, de
+ * zoeklijst open of dicht) nemen de rijen heel even geen tikken aan. Anders
+ * komt een dubbele tik op een antwoord van een andere rij terecht.
+ */
+function rbSchild() {
+  rbSchildTot = Date.now() + 500;
+  const zet = (aan) => { const el = document.getElementById('rondgang'); if (el) el.classList.toggle('schild', aan); };
+  zet(true);
+  setTimeout(() => { if (Date.now() >= rbSchildTot) zet(false); }, 520);
+}
+
+function bovenChip(c) {
+  const b = c.delen.boven;
+  const stand = bovenStand(c);
+  return h('span', { class: `chip ${b.status}${stand === 'volledig' ? ' volledig' : ''}`, 'data-deel': 'boven', 'data-status': b.status },
+    `Boven: ${stand === 'volledig' ? 'volledig, nog afsluiten' : STATUSTEKST[b.status]}`);
+}
+
+const benedenKnopTekst = (ben) => (ben.status === 'open' ? 'Beneden starten' : ben.status === 'bezig' ? 'Beneden verderzetten' : 'Beneden bekijken');
+
+/**
+ * Werkt in de rondgang alleen de statussen bij (verzonden, wacht op verzenden),
+ * zonder het scherm opnieuw te tekenen. Nodig terwijl de controleur in een veld
+ * typt of een keuzelijst open heeft: opnieuw tekenen zou dat onderbreken.
+ */
+async function werkStandenBij() {
+  for (const el of $scherm.querySelectorAll('.rb-rij')) {
+    const c = await db.haal('controles', el.dataset.appId);
+    if (!c || !el.isConnected) continue;
+    el.dataset.stand = bovenStand(c);
+    const oudBoven = el.querySelector('.chip[data-deel="boven"]');
+    if (oudBoven) oudBoven.replaceWith(bovenChip(c));
+    const oudBeneden = el.querySelector('.chip[data-deel="beneden"]');
+    if (oudBeneden) oudBeneden.replaceWith(chip('beneden', c.delen.beneden));
+    const knop = el.querySelector('[data-naar="beneden"]');
+    if (knop) { knop.textContent = benedenKnopTekst(c.delen.beneden); knop.classList.toggle('gedaan', !isOpenDeel(c.delen.beneden)); }
+  }
+}
+
+/** Eén punt van Boven in een rij van de rondgang: de naam erboven, het antwoord eronder. */
+function rondgangPunt(c, id, open) {
+  const volledig = M.label(id, snapshot);
+  return h('section', { class: `rb-punt${M.VELDEN[id].soort === 'tekst' ? ' tekst' : ''}${open ? ' open' : ''}`, 'data-veld': id },
+    h('h4', { title: volledig }, volledig),
+    antwoordVeld(c, 'boven', id, `${id}@${c.appId}`));
+}
+
+/**
+ * Eén productie in de rondgang: de lijn, de code, wat er nagekeken moet worden
+ * en de punten van Boven, allemaal in de rij zelf. Zo staan de lijnen onder
+ * elkaar zoals in de sheet. Beneden opent met één tik op zijn eigen scherm.
+ */
+function rondgangRij(c) {
+  const b = c.delen.boven;
+  const ben = c.delen.beneden;
+  const bewerk = isOpenDeel(b);
+  const stand = bovenStand(c);
+  const gewijzigd = bewerk && wijzigingOpen(c, 'boven');
+  // Rood omrand: alleen de rijen die bij de laatste tik op "Boven afsluiten" niet afgesloten konden worden.
+  const rood = rbRood.has(c.appId) && (stand === 'bezig' || (stand === 'volledig' && gewijzigd));
+  const open = rood && stand === 'bezig' ? M.openPunten('boven', b) : [];
+  const lijn = M.lijnVan(c);
+
+  async function corrigeer() {
+    await db.werkBij('controles', c.appId, (x) => { if (isOpenDeel(x.delen.boven)) return false; x.delen.boven.status = 'bezig'; x.delen.boven.versie += 1; });
+    await sync.uitWachtrij(c.appId, 'boven');
+    toon({ behoudScroll: true });
+  }
+  async function haalWeg() {
+    await db.wisAls('controles', c.appId, isOnaangeroerd);
+    rbSchild();
+    toon({ behoudScroll: true });
+  }
+
+  return h('section', { class: `rb-rij${rood ? ' open' : ''}${bewerk ? '' : ' dicht'}`, 'data-app-id': c.appId, 'data-code': c.code, 'data-stand': stand },
+    h('div', { class: 'rb-kop' },
+      bewerk ? lijnKeuze(c, rood && !lijn, `lijn-${c.appId}`) : h('span', { class: 'lijn' }, lijn || (c.bron === 'pallet' ? 'Pallet' : '?')),
+      h('button', { class: 'rij rb-naam', 'data-code': c.code, title: 'Alles van deze controle bekijken', onclick: () => { rbToon = c.appId; ga(`#/c/${c.appId}`); } },
+        h('span', { class: 'rij-tekst' }, h('strong', {}, c.code), h('span', {}, c.opzoek.product || 'Code niet in de lijst')),
+        h('span', { class: 'chips' }, bovenChip(c), chip('beneden', ben))),
+      h('button', { class: `knop rb-beneden${isOpenDeel(ben) ? '' : ' gedaan'}`, 'data-naar': 'beneden', onclick: () => ga(`#/c/${c.appId}/beneden/lijst`) }, benedenKnopTekst(ben)),
+      // Per vergissing toegevoegd en nog niets ingevuld: met één tik weer uit de lijst.
+      isOnaangeroerd(c) ? h('button', { class: 'rb-weg', 'data-actie': 'weg', title: 'Uit de lijst halen', 'aria-label': `${c.code} uit de lijst halen`, onclick: haalWeg }, '✕') : null),
+    wijzigingBanner(c, true),
+    c.bron === 'vrij'
+      ? h('p', { class: 'rb-info' }, 'Deze code staat niet in de opgehaalde gegevens. De sheet vult product en lot zelf aan.')
+      : h('p', { class: 'rb-info' }, M.GEZIEN.boven.map((k) => h('span', { 'data-opzoek': k }, `${M.OPZOEKNAAM[k]} `, h('b', {}, c.opzoek[k] || '—')))),
+    bewerk
+      ? h('div', { class: 'rb-punten' }, M.veldenVan('boven').map((id) => rondgangPunt(c, id, open.includes(id))))
+      : h('div', { class: 'rb-vast' },
+        h('p', {}, M.veldenVan('boven').map((id) => {
+          const waarde = toonAntwoord(id, b.antwoorden);
+          if (M.VELDEN[id].soort === 'tekst' && waarde === '—') return null;
+          return h('span', { 'data-veld': id }, `${M.label(id, snapshot).split(':')[0]} `, h('b', {}, waarde));
+        })),
+        c.datum === M.vandaag() ? h('button', { class: 'knop rb-corrigeer', 'data-actie': 'corrigeren', onclick: corrigeer }, 'Corrigeren') : null));
+}
+
+/**
+ * De rondgang van vandaag: alle producties onder elkaar, met Boven in de rij.
+ * Bovenaan komt een productie erbij (zoeken op code of product, één tik);
+ * onderaan sluit één knop Boven af voor alle rijen die volledig zijn.
+ */
+async function schermControles() {
+  const dag = M.vandaag(); // de dag van dit scherm; blijft dezelfde als het over middernacht open blijft staan
+  const alle = (await db.alle('controles')).sort((a, b) => a.aangemaaktOm - b.aangemaaktOm);
+  const vandaag = alle.filter((c) => c.datum === dag);
+  const eerder = alle.filter((c) => c.datum !== dag && M.DELEN.some((d) => c.delen[d].status !== 'verzonden'));
+  const $lijst = h('div', { id: 'zoek-lijst' });
+
+  async function voegToe(code, { tochDubbel = false } = {}) {
+    code = String(code || '').trim();
+    if (!code || rbBezig) return; // een tweede tik terwijl de eerste nog loopt, telt niet
+    rbBezig = true;
+    try {
+      // Vers uit de opslag, zodat een dubbele tik nooit stil een tweede controle maakt.
+      const bestaat = (await db.alle('controles')).some((c) => c.datum === dag && c.code === code);
+      if (bestaat && !tochDubbel) { nieuw.gekozen = code; rbSchild(); tekenLijst(); return; }
+      const treffer = M.zoekCode(snapshot, code);
+      const c = M.nieuweControle(code, treffer ? treffer.item : null, treffer ? treffer.bron : 'vrij');
+      try {
+        await db.zet('controles', c);
+      } catch (e) {
+        zetMelding('fout', `Bewaren op de tablet mislukte: ${e && e.message ? e.message : e}. De productie is NIET toegevoegd.`);
+        await toon({ behoudScroll: true });
+        return;
+      }
+      nieuw.gekozen = null;
+      nieuw.zoek = '';
+      nieuw.alles = false;
+      rbToon = c.appId;
+      rbSchild();
+      await toon({ behoudScroll: true });
+    } finally {
+      rbBezig = false;
+    }
+  }
+
+  function tekenLijst() {
+    const z = nieuw.zoek.trim().toLowerCase();
+    const bestaand = nieuw.gekozen ? vandaag.filter((c) => c.code === nieuw.gekozen) : [];
+    if (nieuw.gekozen && !bestaand.length) nieuw.gekozen = null; // de controle is intussen verwijderd
+    if (nieuw.gekozen) {
+      const code = nieuw.gekozen;
+      $lijst.replaceChildren(h('div', { class: 'melding wacht', id: 'bestaat-al' },
+        `Er staat vandaag al een controle voor ${code} in de lijst.`,
+        h('div', { class: 'knoppen' },
+          h('button', { class: 'knop', id: 'toon-bestaande', onclick: () => {
+            nieuw.gekozen = null; nieuw.zoek = ''; nieuw.alles = false;
+            rbToon = bestaand[bestaand.length - 1].appId;
+            rbSchild();
+            toon({ behoudScroll: true });
+          } }, 'Toon ze in de lijst'),
+          h('button', { class: 'knop', id: 'toch-toevoegen', onclick: () => voegToe(code, { tochDubbel: true }) }, 'Toch een tweede controle toevoegen'),
+          h('button', { class: 'knop', onclick: () => { nieuw.gekozen = null; rbSchild(); tekenLijst(); } }, 'Annuleren'))));
+      return;
+    }
+    // Zonder zoektekst blijft de lijst dicht, zodat de producties van vandaag
+    // meteen in beeld staan. Een tik op "Orders" of "Pallets" toont ze toch.
+    if (!z && !nieuw.alles) { $lijst.replaceChildren(); return; }
+    const items = (nieuw.tab === 'order' ? snapshot.orders : snapshot.pallets)
+      .filter((o) => !z || String(o.code).toLowerCase().includes(z) || String(o.product).toLowerCase().includes(z));
+    const getoond = items.slice(0, 30);
+    $lijst.replaceChildren(...[
+      getoond.map((o) => h('button', { class: 'rij', 'data-code': o.code, onclick: () => voegToe(o.code) },
+        h('span', { class: 'rij-tekst' }, h('strong', {}, o.code), h('span', {}, o.product)),
+        h('span', { class: 'chip' }, o.status || o.toestand || ''))),
+      items.length > getoond.length ? h('p', { class: 'klein zacht' }, `Nog ${items.length - getoond.length} meer. Zoek op code of product om te verfijnen.`) : null,
+      !items.length ? h('div', { class: 'kaart', id: 'niet-gevonden' },
+        h('p', {}, z ? `Geen ${nieuw.tab === 'order' ? 'order' : 'pallet'} gevonden voor "${nieuw.zoek.trim()}".` : 'Geen items in deze lijst.'),
+        h('div', { class: 'knoppen' },
+          h('button', { class: 'knop', id: 'zoek-ververs', onclick: () => ververs() }, 'Gegevens verversen'),
+          z ? h('button', { class: 'knop', id: 'code-intypen', onclick: () => voegToe(nieuw.zoek) }, `Code "${nieuw.zoek.trim()}" toch toevoegen`) : null)) : null
+    ].flat(Infinity).filter(Boolean));
+  }
+
+  /**
+   * Sluit Boven af voor elke rij die volledig is. Een rij die onvolledig is, of
+   * waarvan de gegevens bij het verversen gewijzigd zijn zonder dat de
+   * controleur "Gezien" tikte, blijft open en wordt rood omrand.
+   */
+  async function sluitBovenAf() {
+    if (rbBezig) return;
+    rbBezig = true;
+    try {
+      let dicht = 0;
+      const nietDicht = new Set();
+      // Vers uit de opslag: een opmerking die net getypt is, staat nog niet op dit scherm.
+      const vers = (await db.alle('controles')).filter((c) => c.datum === dag).sort((a, b) => a.aangemaaktOm - b.aangemaaktOm);
+      for (const c of vers) {
+        if (c.delen.boven.status !== 'bezig') continue; // niet begonnen, of al afgesloten
+        // "Gezien: lot" in de sheet moet zijn wat de controleur echt zag.
+        if (wijzigingOpen(c, 'boven')) { nietDicht.add(c.appId); continue; }
+        if (await sluitDeel(c.appId, 'boven')) dicht += 1; else nietDicht.add(c.appId);
+      }
+      if (dicht) sync.verwerk();
+      rbRood = nietDicht;
+      const okNogGeldig = rbBericht && rbBericht.soort === 'ok' && rbBericht.tot > Date.now();
+      if (dicht) rbBericht = { soort: 'ok', tekst: `Boven is afgesloten voor ${dicht} ${dicht === 1 ? 'lijn' : 'lijnen'}.`, tot: Date.now() + 15000 };
+      else if (nietDicht.size) rbBericht = null;
+      else if (!okNogGeldig) rbBericht = { soort: 'wacht', tekst: 'Er is nog geen lijn ingevuld voor Boven.', tot: Date.now() + 8000 };
+      naToon = () => { const eerste = document.querySelector('.rb-rij.open'); if (eerste) eerste.scrollIntoView({ block: 'center' }); };
+      await toon({ behoudScroll: true });
+    } finally {
+      rbBezig = false;
+    }
+  }
+
+  const $tabs = h('div', { class: 'filter' });
+  function kiesTab(tab) {
+    // Zonder zoektekst: de tik toont de lijst, een tweede tik op hetzelfde tabblad sluit ze weer.
+    if (!nieuw.zoek.trim()) nieuw.alles = nieuw.tab === tab ? !nieuw.alles : true;
+    nieuw.tab = tab;
+    nieuw.gekozen = null;
+    rbSchild();
+    tekenTabs();
+    tekenLijst();
+  }
+  function tekenTabs() {
+    $tabs.replaceChildren(
+      h('button', { class: nieuw.tab === 'order' ? 'aan' : '', id: 'tab-orders', onclick: () => kiesTab('order') }, `Orders (${snapshot.orders.length})`),
+      h('button', { class: nieuw.tab === 'pallet' ? 'aan' : '', id: 'tab-pallets', onclick: () => kiesTab('pallet') }, `Pallets (${snapshot.pallets.length})`));
+  }
+  // De lijn uit de productielijst staat hier niet: ze ligt vaak nog niet vast. Zoeken gaat op code of product.
+  const $zoek = h('input', { class: 'invoer', id: 'zoek', type: 'search', placeholder: 'Productie toevoegen: zoek op code of product', value: nieuw.zoek, autocomplete: 'off',
+    oninput: (e) => { nieuw.zoek = e.target.value; nieuw.gekozen = null; tekenLijst(); } });
+  if (snapshot) { tekenTabs(); tekenLijst(); }
+
+  if (rbToon) {
+    const id = rbToon;
+    rbToon = null;
+    naToon = () => { const el = document.querySelector(`.rb-rij[data-app-id="${id}"]`); if (el) el.scrollIntoView({ block: 'center' }); };
+  }
+
+  const standen = vandaag.map(bovenStand);
+  const gewijzigd = vandaag.map((c) => isOpenDeel(c.delen.boven) && wijzigingOpen(c, 'boven'));
+  const volledig = standen.filter((x, i) => x === 'volledig' && !gewijzigd[i]).length;
+  const onvolledig = standen.filter((x, i) => x === 'bezig' || (x === 'volledig' && gewijzigd[i])).length;
+  const teSluiten = vandaag.some((c) => isOpenDeel(c.delen.boven));
+  const roodOpen = vandaag.filter((c, i) => rbRood.has(c.appId) && standen[i] === 'bezig').length;
+  const roodGewijzigd = vandaag.filter((c, i) => rbRood.has(c.appId) && standen[i] === 'volledig' && gewijzigd[i]).length;
+  const bericht = rbBericht && rbBericht.tot > Date.now() ? rbBericht : null;
+
+  return [
+    h('div', { class: `rondgang${Date.now() < rbSchildTot ? ' schild' : ''}`, id: 'rondgang' },
+      h('div', { class: 'rb-top' },
+        h('h2', {}, `Rondgang · ${datumLang(dag)}`),
+        snapshot ? [$tabs, $zoek] : null),
+      !snapshot ? h('div', { class: 'melding wacht' }, 'Haal eerst de gegevens op met "Verversen". Zonder gegevens kent de app de keuzelijsten van de sheet niet.') : $lijst,
+      vandaag.length ? vandaag.map((c) => rondgangRij(c))
+        : h('p', { class: 'zacht', id: 'rb-leeg' }, 'Nog geen producties vandaag. Zoek hierboven de code van elke lijn en tik ze aan; ze komen hier onder elkaar te staan.'),
+      teSluiten || bericht ? h('div', { class: 'rb-slot' },
+        bericht ? h('div', { class: `melding ${bericht.soort}`, id: 'rb-bericht' }, bericht.tekst) : null,
+        roodOpen || roodGewijzigd ? h('div', { class: 'melding fout', id: 'open-melding' }, [
+          roodOpen ? `${roodOpen} ${roodOpen === 1 ? 'lijn is' : 'lijnen zijn'} nog niet volledig (rood omrand): kies de lijn en beantwoord elk punt; een NOK of STOP vraagt een opmerking.` : '',
+          roodGewijzigd ? `Bij ${roodGewijzigd} ${roodGewijzigd === 1 ? 'lijn zijn' : 'lijnen zijn'} de gegevens gewijzigd bij het verversen: kijk ze na en tik in die rij op "Gezien".` : ''
+        ].filter(Boolean).join(' ')) : null,
+        teSluiten ? h('button', { class: `knop breed${volledig ? ' hoofd' : ''}`, id: 'boven-afsluiten', 'data-volledig': String(volledig), 'data-onvolledig': String(onvolledig), onclick: sluitBovenAf },
+          volledig || onvolledig ? `Boven afsluiten: ${volledig} volledig${onvolledig ? `, ${onvolledig} onvolledig` : ''}` : 'Boven afsluiten') : null) : null,
+      eerder.length ? [h('h2', {}, 'Onafgewerkt van eerdere dagen'), eerder.map((c) => [h('p', { class: 'klein zacht' }, datumLang(c.datum)), rijControle(c)])] : null)
+  ];
+}
 
 function opzoekLijst(waarden, sleutels, oud) {
   return h('dl', { class: 'opzoek' }, sleutels.map((k) => [
@@ -347,79 +630,6 @@ function opzoekLijst(waarden, sleutels, oud) {
       oud && (oud[k] || '') !== (waarden[k] || '') ? [h('span', { class: 'verschil' }, oud[k] || '(leeg)'), ' → '] : null,
       waarden[k] || '—')
   ]));
-}
-
-async function schermNieuw() {
-  if (!snapshot) return [h('h2', {}, 'Nieuwe controle'), h('div', { class: 'melding wacht' }, 'Haal eerst de gegevens op met "Verversen". Zonder gegevens kent de app de keuzelijsten van de sheet niet.')];
-  const controles = await db.alle('controles');
-  const $lijst = h('div', { id: 'zoek-lijst' });
-  const $keuze = h('div', { id: 'gekozen' });
-
-  function bron() { return nieuw.tab === 'order' ? snapshot.orders : snapshot.pallets; }
-
-  function tekenLijst() {
-    const z = nieuw.zoek.trim().toLowerCase();
-    let items = bron();
-    if (z) items = items.filter((o) => String(o.code).toLowerCase().includes(z) || String(o.product).toLowerCase().includes(z));
-    const getoond = items.slice(0, 60);
-    $lijst.replaceChildren(...[
-      getoond.map((o) => h('button', { class: 'rij', 'data-code': o.code, onclick: () => kies(String(o.code)) },
-        h('span', { class: 'rij-tekst' }, h('strong', {}, o.code), h('span', {}, o.product)),
-        h('span', { class: 'chip' }, o.status || o.toestand || ''))),
-      items.length > getoond.length ? h('p', { class: 'klein zacht' }, `Nog ${items.length - getoond.length} meer. Zoek op code om te verfijnen.`) : null,
-      !items.length ? h('div', { class: 'kaart', id: 'niet-gevonden' },
-        h('p', {}, z ? `Geen ${nieuw.tab === 'order' ? 'order' : 'pallet'} gevonden voor "${nieuw.zoek.trim()}".` : 'Geen items in deze lijst.'),
-        h('div', { class: 'knoppen' },
-          h('button', { class: 'knop', id: 'zoek-ververs', onclick: () => ververs() }, 'Gegevens verversen'),
-          z ? h('button', { class: 'knop', id: 'code-intypen', onclick: () => kies(nieuw.zoek.trim()) }, `Code "${nieuw.zoek.trim()}" intypen`) : null)) : null
-    ].flat(Infinity).filter(Boolean));
-  }
-
-  function tekenKeuze() {
-    if (!nieuw.gekozen) { $keuze.replaceChildren(); return; }
-    const code = nieuw.gekozen;
-    const treffer = M.zoekCode(snapshot, code);
-    const bestaand = controles.find((c) => c.code === code && c.datum === M.vandaag());
-    const waarden = {};
-    M.OPZOEKVELDEN.forEach((k) => { waarden[k] = treffer ? treffer.item[k] || '' : ''; });
-    $keuze.replaceChildren(h('div', { class: 'kaart blok-boven', id: 'keuze-kaart' },
-      h('h3', {}, code),
-      treffer ? opzoekLijst(waarden, M.OPZOEKVELDEN) : h('div', { class: 'melding wacht' }, 'Deze code staat niet in de opgehaalde gegevens. De app kan product en lot niet tonen; de sheet vult ze zelf aan.'),
-      bestaand ? h('div', { class: 'melding wacht', id: 'bestaat-al' }, 'Er bestaat vandaag al een controle voor deze code.',
-        h('div', { class: 'knoppen' }, h('button', { class: 'knop', onclick: () => ga(`#/c/${bestaand.appId}`) }, 'Bestaande controle openen'))) : null,
-      h('p', { class: 'klein zacht' }, bestaand ? 'Toch een nieuwe controle starten met:' : 'Met welk deel begin je?'),
-      h('div', { class: 'knoppen' },
-        h('button', { class: 'knop hoofd', id: 'start-boven', onclick: () => maak(code, treffer, 'boven') }, 'Boven'),
-        h('button', { class: 'knop hoofd', id: 'start-beneden', onclick: () => maak(code, treffer, 'beneden') }, 'Beneden'),
-        h('button', { class: 'knop', onclick: () => { nieuw.gekozen = null; tekenKeuze(); } }, 'Annuleren'))));
-    $keuze.scrollIntoView({ block: 'start' });
-  }
-
-  function kies(code) {
-    if (!code) return;
-    nieuw.gekozen = code;
-    tekenKeuze();
-  }
-
-  async function maak(code, treffer, deel) {
-    const c = M.nieuweControle(code, treffer ? treffer.item : null, treffer ? treffer.bron : 'vrij');
-    await db.zet('controles', c);
-    nieuw.gekozen = null;
-    nieuw.zoek = '';
-    ga(`#/c/${c.appId}/${deel}/0`);
-  }
-
-  const $tabs = h('div', { class: 'filter' });
-  function tekenTabs() {
-    $tabs.replaceChildren(
-      h('button', { class: nieuw.tab === 'order' ? 'aan' : '', id: 'tab-orders', onclick: () => { nieuw.tab = 'order'; tekenTabs(); tekenLijst(); } }, `Orders (${snapshot.orders.length})`),
-      h('button', { class: nieuw.tab === 'pallet' ? 'aan' : '', id: 'tab-pallets', onclick: () => { nieuw.tab = 'pallet'; tekenTabs(); tekenLijst(); } }, `Pallets (${snapshot.pallets.length})`));
-  }
-  const $zoek = h('input', { class: 'invoer', id: 'zoek', type: 'search', placeholder: 'Zoek op code of product', value: nieuw.zoek, autocomplete: 'off', oninput: (e) => { nieuw.zoek = e.target.value; tekenLijst(); } });
-
-  // De lijn uit de productielijst staat hier niet: ze ligt vaak nog niet vast. Zoeken gaat op code of product.
-  tekenTabs(); tekenLijst(); tekenKeuze();
-  return [h('h2', {}, 'Nieuwe controle'), $keuze, $tabs, $zoek, $lijst];
 }
 
 /* ------------------------------------------------------------------ */
@@ -433,14 +643,14 @@ function kopControle(c) {
     h('p', { class: 'klein zacht' }, datumLang(c.datum)));
 }
 
-function wijzigingBanner(c) {
+function wijzigingBanner(c, inRij = false) {
   if (!c.wijziging) return null;
   const gewijzigd = M.OPZOEKVELDEN.filter((k) => (c.wijziging.oud[k] || '') !== (c.opzoek[k] || ''));
   if (!gewijzigd.length) return null;
-  return h('div', { class: 'melding wacht', id: 'wijziging' },
+  return h('div', { class: `melding wacht${inRij ? ' rb-wijziging' : ''}`, id: inRij ? null : 'wijziging', 'data-wijziging': c.code },
     h('strong', {}, `De gegevens van deze order zijn gewijzigd bij het verversen van ${dagEnUur(c.wijziging.om)}.`),
     opzoekLijst(c.opzoek, gewijzigd, c.wijziging.oud),
-    h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: 'wijziging-gezien', onclick: async () => {
+    h('div', { class: 'knoppen' }, h('button', { class: 'knop', id: inRij ? null : 'wijziging-gezien', 'data-actie': 'wijziging-gezien', onclick: async () => {
       await db.werkBij('controles', c.appId, (x) => { x.wijziging = null; });
       toon({ behoudScroll: true });
     } }, 'Gezien')));
@@ -477,7 +687,7 @@ async function schermControle(appId, deel, groep) {
   const c = await db.haal('controles', appId);
   if (!c) return [h('div', { class: 'melding fout' }, 'Deze controle bestaat niet (meer) op deze tablet.')];
   if (deel === 'boven' || deel === 'beneden') {
-    return isOpenDeel(c.delen[deel]) ? schermDeel(c, deel) : schermSamenvatting(c, deel);
+    return isOpenDeel(c.delen[deel]) ? schermDeel(c, deel, groep === 'lijst') : schermSamenvatting(c, deel);
   }
 
   const magWeg = magVerwijderd(c);
@@ -567,34 +777,40 @@ function punt(c, deel, id, open) {
     el.append(h('div', { class: 'keuzes' }, h('button', { class: `keuze${namen.length ? ' gekozen' : ''}`, id: 'operatoren-kies', onclick: () => kiesOperatoren(c) }, namen.length ? 'Wijzig' : 'Kies…')));
     return el;
   }
+  const veld = antwoordVeld(c, deel, id);
+  // Een opmerking of een foutmelding krijgt de volle breedte onder de naam.
+  if (v.soort === 'tekst' || veld.classList.contains('melding')) el.classList.add('tekst');
+  el.append(veld);
+  return el;
+}
+
+/**
+ * Het invoerelement van één punt: een tekstvak, een getal, knoppen of (bij een
+ * lange keuzelijst) een uitklaplijst. Niets is vooraf gekozen. sleutel: uniek
+ * per veld op het scherm, zodat de cursor na het tekenen terug op zijn plaats staat.
+ */
+function antwoordVeld(c, deel, id, sleutel = id) {
+  const v = M.VELDEN[id];
+  const a = c.delen[deel].antwoorden[id];
   if (v.soort === 'tekst') {
-    el.classList.add('tekst');
-    el.append(h('textarea', { class: 'invoer', 'data-invoer': id, rows: 2, placeholder: 'Verplicht bij een NOK of STOP', oninput: (e) => bewaar(c.appId, deel, id, e.target.value, { teken: false }) }, a || ''));
-    return el;
+    return h('textarea', { class: 'invoer', 'data-invoer': sleutel, rows: 2, placeholder: 'Verplicht bij een NOK of STOP', oninput: (e) => bewaar(c.appId, deel, id, e.target.value, { teken: false }) }, a || '');
   }
   if (v.soort === 'getal') {
-    el.append(h('input', { class: 'invoer getal', 'data-invoer': id, type: 'number', inputmode: 'decimal', step: 'any', min: '0', value: a === undefined ? '' : a,
-      oninput: (e) => bewaar(c.appId, deel, id, e.target.value === '' ? undefined : e.target.value, { teken: false }) }));
-    return el;
+    return h('input', { class: 'invoer getal', 'data-invoer': sleutel, type: 'number', inputmode: 'decimal', step: 'any', min: '0', value: a === undefined ? '' : a,
+      oninput: (e) => bewaar(c.appId, deel, id, e.target.value === '' ? undefined : e.target.value, { teken: false }) });
   }
   const ks = M.keuzes(id, snapshot);
-  if (!ks) {
-    el.classList.add('tekst');
-    el.append(h('div', { class: 'melding fout' }, 'Voor deze kolom is in de sheet geen keuzelijst gevonden. Ververs de gegevens of kijk de gegevensvalidatie van de kolom na.'));
-    return el;
-  }
+  if (!ks) return h('div', { class: 'melding fout' }, 'Voor deze kolom is in de sheet geen keuzelijst gevonden. Ververs de gegevens of kijk de gegevensvalidatie van de kolom na.');
   if (ks.length > 4) {
     // Een lange keuzelijst (operatoren, trechters): dezelfde keuzes, in een uitklaplijst. Niets is vooraf gekozen.
     const gekozen = a === undefined ? -1 : ks.findIndex((k) => k.waarde === a);
-    el.append(h('select', { class: `invoer kies${gekozen === -1 ? '' : ' gekozen'}`, 'data-keuze': id, onchange: (e) => bewaar(c.appId, deel, id, ks[Number(e.target.value)].waarde) },
+    return h('select', { class: `invoer kies${gekozen === -1 ? '' : ' gekozen'}`, 'data-keuze': id, onchange: (e) => bewaar(c.appId, deel, id, ks[Number(e.target.value)].waarde) },
       h('option', { value: '', disabled: true, selected: gekozen === -1 }, 'Kies…'),
-      ks.map((k, i) => h('option', { value: String(i), selected: i === gekozen }, k.tekst))));
-    return el;
+      ks.map((k, i) => h('option', { value: String(i), selected: i === gekozen }, k.tekst)));
   }
-  el.append(h('div', { class: 'keuzes' }, ks.map((k) =>
+  return h('div', { class: 'keuzes' }, ks.map((k) =>
     h('button', { class: `keuze ${kleurKlasse(k)}${a !== undefined && a === k.waarde ? ' gekozen' : ''}`, 'data-waarde': String(k.waarde), 'aria-pressed': a !== undefined && a === k.waarde ? 'true' : 'false',
-      onclick: () => bewaar(c.appId, deel, id, k.waarde) }, k.tekst))));
-  return el;
+      onclick: () => bewaar(c.appId, deel, id, k.waarde) }, k.tekst)));
 }
 
 /**
@@ -658,11 +874,11 @@ async function kiesOperatoren(c) {
  * deel niet af. De keuze geldt voor de hele controle (Boven en Beneden) en
  * komt in kolom "Lijn" van de sheet.
  */
-function lijnKeuze(c, open) {
+function lijnKeuze(c, open, id = 'lijn') {
   const lijn = M.lijnVan(c);
   return h('label', { class: `lijn-keuze${open ? ' open' : ''}`, 'data-veld': 'lijn' },
     h('span', {}, 'Lijn'),
-    h('select', { class: `invoer kies${lijn ? ' gekozen' : ''}`, id: 'lijn', onchange: async (e) => {
+    h('select', { class: `invoer kies${lijn ? ' gekozen' : ''}`, id, onchange: async (e) => {
       const gekozen = e.target.value;
       try {
         await db.werkBij('controles', c.appId, (x) => { x.lijn = gekozen; x.lijnZelf = true; });
@@ -675,8 +891,44 @@ function lijnKeuze(c, open) {
       M.lijnKeuzes(snapshot, lijn).map((k) => h('option', { value: k, selected: k === lijn }, k))));
 }
 
-/** Een heel deel (Boven of Beneden) op één scherm: alle punten in kolommen naast elkaar. */
-async function schermDeel(c, deel) {
+/**
+ * Sluit een deel af als het volledig is: status "klaar", vastleggen wat de
+ * controleur zag, en in de wachtrij. Geeft false terug zolang er een punt open
+ * staat of de lijn niet gekozen is; dan verandert er niets.
+ */
+async function sluitDeel(appId, deel) {
+  const vers = await db.haal('controles', appId);
+  if (!vers) return false;
+  if (!isOpenDeel(vers.delen[deel])) return true; // intussen al afgesloten (ander venster)
+  if (M.openPunten(deel, vers.delen[deel]).length || !M.lijnVan(vers)) return false;
+  await db.werkBij('controles', appId, (x) => {
+    const dx = x.delen[deel];
+    dx.status = 'klaar';
+    dx.versie += 1;
+    dx.afgeslotenOm = new Date().toISOString();
+    // Wat de controleur zag, vastgelegd op het moment van afsluiten.
+    dx.gezien = x.bron === 'vrij' ? null : Object.fromEntries(M.GEZIEN[deel].map((k) => [k, x.opzoek[k] || '']));
+  });
+  await sync.inWachtrij(appId, deel);
+  if (deel === 'beneden') {
+    // Eerst de gegevens van de controle (klein), daarna de foto's (groot).
+    const f = await fotosVan(vers.delen.beneden);
+    for (const soort of M.FOTOSOORTEN) {
+      if (!f[soort] || f[soort].status === 'verzonden') continue;
+      // De lijn van nu hoort bij de bestandsnaam van de foto en blijft daarna dezelfde bij elke herhaling.
+      await db.werkBij('fotos', f[soort].id, (x) => { x.lijn = M.lijnVan(vers); });
+      await sync.fotoInWachtrij(f[soort].id, appId);
+    }
+  }
+  return true;
+}
+
+/**
+ * Een heel deel (Boven of Beneden) op één scherm: alle punten in kolommen naast
+ * elkaar. vanLijst: geopend vanuit de rondgang; na het afsluiten gaat het daar
+ * naar terug.
+ */
+async function schermDeel(c, deel, vanLijst = false) {
   const groepen = M.GROEPEN[deel];
   const d = c.delen[deel];
   const open = toonOpen ? M.openPunten(deel, d) : [];
@@ -684,37 +936,17 @@ async function schermDeel(c, deel) {
   const fotos = deel === 'beneden' ? await fotosVan(d) : {};
 
   async function afsluiten() {
-    const vers = await db.haal('controles', c.appId);
-    const antw = vers.delen[deel];
-    if (M.openPunten(deel, antw).length || !M.lijnVan(vers)) {
+    if (!(await sluitDeel(c.appId, deel))) {
       toonOpen = true;
       await toon({ behoudScroll: true });
       const eerste = document.querySelector('.lijn-keuze.open, .punt.open');
       if (eerste) eerste.scrollIntoView({ block: 'nearest' });
       return;
     }
-    await db.werkBij('controles', c.appId, (x) => {
-      const dx = x.delen[deel];
-      dx.status = 'klaar';
-      dx.versie += 1;
-      dx.afgeslotenOm = new Date().toISOString();
-      // Wat de controleur zag, vastgelegd op het moment van afsluiten.
-      dx.gezien = x.bron === 'vrij' ? null : Object.fromEntries(M.GEZIEN[deel].map((k) => [k, x.opzoek[k] || '']));
-    });
-    await sync.inWachtrij(c.appId, deel);
-    if (deel === 'beneden') {
-      // Eerst de gegevens van de controle (klein), daarna de foto's (groot).
-      const f = await fotosVan(vers.delen.beneden);
-      for (const soort of M.FOTOSOORTEN) {
-        if (!f[soort] || f[soort].status === 'verzonden') continue;
-        // De lijn van nu hoort bij de bestandsnaam van de foto en blijft daarna dezelfde bij elke herhaling.
-        await db.werkBij('fotos', f[soort].id, (x) => { x.lijn = M.lijnVan(vers); });
-        await sync.fotoInWachtrij(f[soort].id, c.appId);
-      }
-    }
     sync.verwerk();
     zetMelding('ok', `${M.DEELNAAM[deel]} is afgesloten voor ${c.code}.`, 1);
-    ga(`#/c/${c.appId}`);
+    if (vanLijst) rbToon = c.appId;
+    ga(vanLijst ? '#/controles' : `#/c/${c.appId}`);
   }
 
   const fotoOpen = M.FOTOSOORTEN.some((soort) => open.includes(M.FOTOS[soort].punt));
@@ -1034,15 +1266,18 @@ function dagPunt(soort, dc, p, sleutel, open) {
  * was niet OK" en vraagt wat er scheelt. Wat niet aangetikt is, wordt OK bij het
  * afsluiten.
  */
-function dagTegel(soort, dc, p, sleutel, open) {
+function dagTegel(soort, dc, p, sleutel, open, gebruik) {
   const a = dc.antwoorden[p.kop];
   const nietOk = !!a && a.ok === false;
   const [titel, hulp] = dagTitel(soort, p);
-  const el = h('section', { class: `dag-tegel${nietOk ? ' niet-ok' : ''}${open ? ' open' : ''}`, 'data-punt': p.kop, 'data-niet-ok': String(nietOk) },
+  // Een trechter die in de rondgang boven bij een lijn aangeduid is: daar is hij al bekeken.
+  const waar = gebruik && gebruik.get(M.trechterNummer(titel, true));
+  const el = h('section', { class: `dag-tegel${nietOk ? ' niet-ok' : ''}${open ? ' open' : ''}`, 'data-punt': p.kop, 'data-niet-ok': String(nietOk), 'data-gebruik': waar ? waar.map((x) => x.tekst).join(', ') : null },
     h('button', { class: 'dag-naam', 'aria-pressed': String(nietOk),
       // Eén tik markeert. Terugzetten gaat met "Toch OK", zodat een getypte opmerking niet per ongeluk verdwijnt.
       onclick: nietOk ? null : () => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: false, tekst: '' }; }) },
       h('span', { class: 'dag-tekst' }, h('strong', {}, titel), hulp ? h('small', {}, hulp) : null),
+      waar ? h('span', { class: 'dag-gebruik', title: `Vandaag in gebruik: ${waar.map((x) => x.tekst).join(', ')}` }, `op ${waar.map((x) => x.kort).join(', ')}`) : null,
       h('span', { class: 'dag-stand' }, nietOk ? 'niet OK' : 'OK')));
   if (nietOk) {
     el.append(h('div', { class: 'dag-binnen' },
@@ -1132,15 +1367,18 @@ async function schermDag(soort, datum, gi) {
     dagWeg(dc)) : null;
 
   if (negatief) {
+    // Trechters die in de rondgang boven van die dag bij een lijn aangeduid zijn.
+    const gebruik = M.trechtersInGebruik(await db.alle('controles'), dc.datum);
+    const inGebruik = g.punten.some((p) => gebruik.has(M.trechterNummer(dagTitel(soort, p)[0], true)));
     // Na een correctie staan de punten uitdrukkelijk op OK; alleen "niet OK" telt als aangetikt.
     const aantal = g.punten.length;
     const nietOk = g.punten.filter((p) => { const a = dc.antwoorden[p.kop]; return a && a.ok === false; }).length;
     return [
       h('div', { class: 'dag-kop' },
         h('h2', {}, `${M.DAGNAAM[soort]}: welke punten waren niet OK?`),
-        h('p', { class: 'stap' }, `${datumLang(dc.datum)} · Tik aan wat niet OK was en schrijf erbij wat er scheelt. Wat je niet aantikt, is OK.`)),
+        h('p', { class: 'stap' }, `${datumLang(dc.datum)} · Tik aan wat niet OK was en schrijf erbij wat er scheelt. Wat je niet aantikt, is OK.${inGebruik ? ' Blauw label: de lijn waar die trechter in de rondgang boven aangeduid is.' : ''}`)),
       eerderBlok,
-      h('div', { class: 'dag-raster', id: 'dag' }, g.punten.map((p, i) => dagTegel(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop)))),
+      h('div', { class: 'dag-raster', id: 'dag' }, g.punten.map((p, i) => dagTegel(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop), gebruik))),
       h('div', { class: 'slot dag-slot' },
         open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Bij ${open.length} ${open.length === 1 ? 'punt' : 'punten'} ontbreekt de opmerking: schrijf wat er scheelt, of tik op "Toch OK".`) : null,
         h('button', { class: 'knop hoofd breed', id: 'verder', 'data-niet-ok': String(nietOk), onclick: verder },
@@ -1388,6 +1626,9 @@ async function start() {
   window.addEventListener('hashchange', () => {
     toonOpen = toonOpenNa;
     toonOpenNa = false;
+    rbRood = new Set();
+    rbBericht = null;
+    nieuw.zoek = ''; nieuw.gekozen = null; nieuw.alles = false; // het zoekveld van de rondgang begint telkens leeg
     bevestigWeg = null;
     document.querySelectorAll('.kiezer').forEach((el) => el.remove()); // een keuzescherm hoort bij het scherm eronder
     // Een melding hoort bij het scherm waar ze getoond werd.
@@ -1405,7 +1646,12 @@ async function start() {
       // Lijsten en overzichten tonen de status van de delen: opnieuw tekenen.
       // Invulschermen niet, anders verliest een tekstveld de cursor.
       const overzicht = ingesteld && (r.length === 0 || r[0] === 'controles' || r[0] === 'einde' || (r[0] === 'c' && r.length === 2));
-      if (overzicht) toon({ behoudScroll: true }); else werkBalkBij();
+      // In de rondgang wordt ook ingevuld: staat de cursor in een veld of is een
+      // keuzelijst open, dan blijft het scherm staan tot de volgende tik.
+      const actief = document.activeElement;
+      const invoerBezig = r[0] === 'controles' && actief && $scherm.contains(actief) && ['SELECT', 'TEXTAREA', 'INPUT'].includes(actief.tagName);
+      if (overzicht && !invoerBezig) toon({ behoudScroll: true, achtergrond: true });
+      else { werkBalkBij(); if (invoerBezig) werkStandenBij(); }
     };
   }
 
