@@ -43,7 +43,23 @@ const INST = {
   FOTO_MAP: "QC foto's",
   FOTO_TEKST: { zk: 'Foto ZK', etiket: 'Foto etiket', opmerking: 'Foto opmerking' },
   FOTO_NAAM: { zk: 'ZK', etiket: 'etiket', opmerking: 'opmerking' },
-  VERSIE: '2.3.0'
+  // "Vorige controle" in de app: zoveel laatste rijen per lijn gaan mee met de
+  // gegevens. Meer dan één, omdat de laatste rij de controle kan zijn waar de
+  // controleur op dat moment zelf mee bezig is, of een controle die hij
+  // intussen naar een andere lijn verplaatst heeft.
+  VORIGE_PER_LIJN: 3,
+  VERSIE: '2.4.0'
+};
+
+/**
+ * Kolommen met opzoekwaarden (formules van de sheet) die de app toont bij
+ * "Vorige controle". Het script schrijft er nooit in. Ze worden gezocht op hun
+ * kop; ontbreekt er één of staat hij er twee keer, dan blijft die waarde leeg.
+ */
+const OPZOEK_KOPPEN = {
+  product: /^klant\+product$/, lotZk: /^lotzk$/, thtZk: /^thtzk$/, allergenenBeneden: /^allergenencheck$/,
+  inhoud: /^inhoudzk$/, eenheid: /^g\/ge\/stuks\/ml$/,
+  grondstof: /^grondstof$/, lotGrd: /^lotgrd$/, thtGrd: /^thtgrd$/, allergenenBoven: /^allergenen$/
 };
 
 /**
@@ -413,6 +429,16 @@ function snapshot_(dwing) {
     tik_('Dagtabblad ' + soort + ': controlepunten lezen');
   });
 
+  // De laatste controles per lijn, voor "Vorige controle". Lukt dat niet, dan
+  // werkt al de rest gewoon door.
+  let vorige = null;
+  try {
+    vorige = vorigeControles_(tab, k);
+  } catch (err) {
+    waarschuwingen.push('De vorige controles per lijn konden niet gelezen worden: ' + err.message);
+  }
+  tik_('QC-tabblad: laatste controles per lijn');
+
   return {
     ok: true,
     om: new Date().toISOString(),
@@ -421,10 +447,157 @@ function snapshot_(dwing) {
     pallets: palletsUit,
     velden: velden,
     lijnen: lijnen_(),
+    vorige: vorige,
     dag: dag,
     bron: { orders: orders.bron, pallets: pallets.bron },
     waarschuwingen: waarschuwingen
   };
+}
+
+/**
+ * Leest hele rijen van het QC-tabblad: getoond (zoals de sheet ze toont) of
+ * ruw (selectievakjes als true/false, datums als dagnummer of Date). Via de
+ * Sheets API in één verzoek; anders rij per rij via SpreadsheetApp.
+ */
+function leesRijen_(tab, bereiken, getoond) {
+  if (typeof Sheets !== 'undefined') {
+    try {
+      const voor = "'" + tab.getName().replace(/'/g, "''") + "'!";
+      const opties = {
+        ranges: bereiken.map(function (b) { return voor + b; }),
+        valueRenderOption: getoond ? 'FORMATTED_VALUE' : 'UNFORMATTED_VALUE', majorDimension: 'ROWS'
+      };
+      if (!getoond) opties.dateTimeRenderOption = 'SERIAL_NUMBER';
+      const antwoord = Sheets.Spreadsheets.Values.batchGet(SpreadsheetApp.getActiveSpreadsheet().getId(), opties);
+      const uit = (antwoord.valueRanges || []).map(function (vr) { return (vr.values && vr.values[0]) || []; });
+      if (uit.length === bereiken.length) return uit;
+    } catch (err) { /* dan via SpreadsheetApp */ }
+  }
+  return bereiken.map(function (b) {
+    const bereik = tab.getRange(b);
+    return (getoond ? bereik.getDisplayValues() : bereik.getValues())[0];
+  });
+}
+
+/**
+ * Voor "Vorige controle" in de app: per lijn de laatste rijen van het
+ * QC-tabblad waarin kolom "Lijn" precies die lijn toont, de nieuwste eerst
+ * (op datum, bij dezelfde datum de onderste rij). Een rij met een combinatie
+ * van lijnen ("L1, L3, L5") hoort bij geen enkele lijn. Alles is gelezen zoals
+ * de sheet het toont; het script schrijft niets.
+ * opzoek: product, lot, THT en allergenen. Voor een rij van de app is dat wat
+ * de controleur toen zag (de kolommen "Gezien: ..."); anders wat de formules
+ * van de sheet nu tonen.
+ * Geeft { lijn: [ { rij, datum, code, appId, opzoek, antwoorden, fotos } ] },
+ * of null als de kolom "Lijn" niet gevonden is.
+ */
+function vorigeControles_(tab, k) {
+  const kol = k.kol;
+  if (!kol.lijn || !kol.tijdstempel || !kol.code) return null;
+  const sleutel = function (x) { return String(x == null ? '' : x).replace(/\s+/g, ' ').trim().toUpperCase(); };
+  const lijnen = lijnen_();
+  const naam = {};
+  lijnen.forEach(function (l) { naam[sleutel(l)] = l; });
+
+  // 1. De kolommen Lijn, Tijdstempel en code van alle rijen: welke rijen zijn het?
+  let kolommen = qcKolommenApi_(tab, [kol.lijn, kol.tijdstempel, kol.code]);
+  if (!kolommen) {
+    const n = tab.getMaxRows() - INST.EERSTE_RIJ + 1;
+    kolommen = [kol.lijn, kol.tijdstempel, kol.code].map(function (c) {
+      return n > 0 ? tab.getRange(INST.EERSTE_RIJ, c, n, 1).getDisplayValues().map(function (r) { return r[0]; }) : [];
+    });
+  }
+  const perLijn = {};
+  let vol = 0;
+  for (let i = Math.max(gevuld_(kolommen[1]), gevuld_(kolommen[2])) - 1; i >= 0 && vol < lijnen.length; i--) {
+    const l = naam[sleutel(kolommen[0][i])];
+    if (!l) continue;
+    if (String(cel_(kolommen[1], i)) === '' && String(cel_(kolommen[2], i)) === '') continue;
+    if (!perLijn[l]) perLijn[l] = [];
+    if (perLijn[l].length >= INST.VORIGE_PER_LIJN) continue;
+    perLijn[l].push(INST.EERSTE_RIJ + i);
+    if (perLijn[l].length === INST.VORIGE_PER_LIJN) vol++;
+  }
+  const nummers = [];
+  Object.keys(perLijn).forEach(function (l) { perLijn[l].forEach(function (r) { nummers.push(r); }); });
+  if (!nummers.length) return {};
+
+  // 2. Die rijen volledig: zoals getoond, en ruw voor de selectievakjes en de datum.
+  const breedte = tab.getLastColumn();
+  const bereiken = nummers.map(function (r) { return 'A' + r + ':' + letter_(breedte) + r; });
+  const getoond = leesRijen_(tab, bereiken, true);
+  const ruw = leesRijen_(tab, bereiken, false);
+
+  const genormd = k.koppen.map(norm_);
+  const opzoekKol = {};
+  Object.keys(OPZOEK_KOPPEN).forEach(function (id) {
+    const treffers = [];
+    genormd.forEach(function (x, i) { if (OPZOEK_KOPPEN[id].test(x)) treffers.push(i); });
+    if (treffers.length === 1) opzoekKol[id] = treffers[0];
+  });
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  // Alleen echte foutcodes van Sheets worden leeg; een opmerking die met "#" begint, blijft staan.
+  const zonderFout = function (x) {
+    const tekst = String(x == null ? '' : x).trim();
+    return /^#(N\/A|REF!|VALUE!|NAME\?|DIV\/0!|ERROR!|NUM!|NULL!)/i.test(tekst) ? '' : tekst;
+  };
+  const rijen = {};
+  nummers.forEach(function (r, n) {
+    const t = getoond[n] || [];
+    const w = ruw[n] || [];
+    const toon = function (c) { return c ? zonderFout(cel_(t, c - 1)) : ''; };
+    const antwoorden = {};
+    const fotos = {};
+    const opzoek = {};
+    Object.keys(opzoekKol).forEach(function (id) { opzoek[id] = zonderFout(cel_(t, opzoekKol[id])); });
+    VELDEN.forEach(function (veld) {
+      const c = kol[veld.id];
+      if (!c) return;
+      if (veld.foto) { fotos[veld.foto] = toon(c); return; }
+      if (veld.gezien) {
+        // Wat de controleur zag, gaat voor op wat de formule nu toont.
+        const gezien = toon(c);
+        const id = veld.gezien === 'allergenen' ? (veld.deel === 'boven' ? 'allergenenBoven' : 'allergenenBeneden') : veld.gezien;
+        if (gezien) opzoek[id] = gezien;
+        return;
+      }
+      if (!veld.soort) return;
+      if (veld.soort === 'vakje') {
+        const x = cel_(w, c - 1);
+        antwoorden[veld.id] = x === true ? true : x === false ? false : null;
+      } else if (veld.soort === 'tekst') {
+        antwoorden[veld.id] = String(cel_(t, c - 1)).trim();
+      } else {
+        antwoorden[veld.id] = toon(c);
+      }
+    });
+    // Een datum die geen datum is (een getal of tekst in Tijdstempel) mag de rest niet tegenhouden.
+    let datum = '';
+    const dag = dagNummer_(cel_(w, kol.tijdstempel - 1), tz);
+    if (dag !== null && dag > 0 && dag < 200000) datum = new Date(Date.UTC(1899, 11, 30) + dag * 86400000).toISOString().slice(0, 10);
+    rijen[r] = {
+      rij: r,
+      lijnInRij: naam[sleutel(cel_(t, kol.lijn - 1))] || '',
+      datum: datum,
+      datumTekst: toon(kol.tijdstempel),
+      code: toon(kol.code),
+      appId: toon(kol.appId),
+      bovenOm: toon(kol.bovenOm),
+      benedenOm: toon(kol.benedenOm),
+      opzoek: opzoek,
+      antwoorden: antwoorden,
+      fotos: fotos
+    };
+  });
+  const uit = {};
+  Object.keys(perLijn).forEach(function (l) {
+    // Is de sheet tussen de twee leesbeurten gewijzigd (rij verplaatst, lijn aangepast), dan telt de rij niet.
+    const lijst = perLijn[l].map(function (r) { return rijen[r]; }).filter(function (x) { return x.lijnInRij === l; });
+    lijst.sort(function (x, y) { return x.datum === y.datum ? y.rij - x.rij : (x.datum < y.datum ? 1 : -1); });
+    lijst.forEach(function (x) { delete x.lijnInRij; });
+    if (lijst.length) uit[l] = lijst;
+  });
+  return uit;
 }
 
 /** THT van een pallet zoals de QC-sheet ze toont: jjmmdd wordt "THT: dd/mm/20jj". */
@@ -1307,6 +1480,11 @@ function nakijken() {
   }
   Logger.log('Orders: ' + s.orders.length + ' (' + s.bron.orders + '), pallets: ' + s.pallets.length + ' (' + s.bron.pallets + ')');
   Logger.log('Lijnen waaruit de controleur kiest: ' + s.lijnen.join(', '));
+  if (s.vorige) {
+    Logger.log('Vorige controle per lijn (rij in de sheet): ' + s.lijnen.map(function (l) {
+      return l + ': ' + (s.vorige[l] ? s.vorige[l].map(function (v) { return v.rij; }).join(' en ') : 'geen');
+    }).join(', '));
+  }
   Object.keys(s.velden).forEach(function (id) {
     const v = s.velden[id];
     Logger.log(v.kolom + '  ' + id + ': ' + v.soort + (v.keuzes.length ? ' [' + v.keuzes.join(' / ') + ']' : ''));

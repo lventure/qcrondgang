@@ -471,7 +471,10 @@ test('met de Sheets API: zelfde snapshot, zonder de bronsheets te openen', () =>
   assert.deepStrictEqual(s.velden, gewoon.velden);
   assert.deepStrictEqual(s.waarschuwingen, []);
   assert.strictEqual(script.teller.openById, 0, 'geen enkele bronsheet geopend');
-  assert.strictEqual(script.teller.api, 1 + 12 + 1 + 7 + 2 + 1 + 3, 'per bron de koprijen en de nodige kolommen, twee kolommen van het QC-tabblad en vier bereiken van de dagtabbladen');
+  // In de nagebootste sheet heeft geen enkele rij een lijn: voor "Vorige controle" worden alleen de drie kolommen gelezen, geen rijen.
+  assert.strictEqual(script.teller.api, 1 + 12 + 1 + 7 + 2 + 1 + 3 + 3, 'per bron de koprijen en de nodige kolommen, twee kolommen van het QC-tabblad, vier bereiken van de dagtabbladen en drie kolommen voor de vorige controles');
+  assert.deepStrictEqual(s.vorige, {});
+  assert.deepStrictEqual(gewoon.vorige, {});
 });
 
 test('Sheets API zonder toegang: de tragere weg neemt over en de app krijgt een waarschuwing', () => {
@@ -855,6 +858,81 @@ test('ongeldige verzoeken worden geweigerd', () => {
   assert.strictEqual(post({ actie: 'controle', appId: ID1, ...BOVEN, datum: '2/10/2026' }).code, 'VERZOEK');
   assert.strictEqual(post({ actie: 'controle', appId: ID1, ...BOVEN, code: '' }).code, 'VERZOEK');
   assert.strictEqual(post({ actie: 'wissen' }).code, 'ACTIE');
+});
+
+for (const sheetsDienst of [false, true]) {
+  test(`snapshot: de laatste drie controles per lijn, nieuwste eerst, zoals de sheet ze toont; een combinatie van lijnen telt voor geen enkele lijn (${sheetsDienst ? 'Sheets API' : 'SpreadsheetApp'})`, () => {
+    const fx = maakFixture({ legeRijen: 6 });
+    const script = laadScript({ actief: fx.qc, opId: fx.opId, sheetsDienst });
+    script.roep('installeer');
+    const post = (obj) => script.post({ sleutel: script.props.SLEUTEL, ...obj });
+    const zet = (r, l, v) => { const x = fx.tab.cel(r, letterNaarKolom(l), true); x.v = v; };
+    // bestaande rijen, met de hand ingevuld: rij 3 op L4, rij 4 met een combinatie (de lijn lag nog niet vast)
+    zet(3, 'B', 'L4'); zet(3, 'J', 'Testklant Kruidenmix 20g'); zet(3, 'K', 'LOT: 2600000001'); zet(3, 'AM', 'THT: 12/2027'); zet(3, 'M', 'Geen Allergenen');
+    zet(3, 'AN', 'Kruidenmix A'); zet(3, 'AO', '111111'); zet(3, 'AQ', 'Geen Allergenen'); zet(3, 'AS', 4); zet(3, 'AU', 'zeef vervangen'); zet(3, 'AK', 'Foto ZK');
+    zet(4, 'B', 'L4, L6');
+    // drie controles van de app: twee op L4 (Boven, daarna Boven en Beneden), één op L8
+    const ID3 = '33333333-3333-4333-8333-333333333333';
+    assert.strictEqual(post({ actie: 'controle', appId: ID1, ...BOVEN, lijn: 'L4' }).rij, 5);
+    assert.strictEqual(post({ actie: 'controle', appId: ID2, ...BOVEN, code: '260103', lijn: 'L8' }).rij, 6);
+    assert.strictEqual(post({ actie: 'controle', appId: ID3, ...BOVEN, code: '260104', lijn: 'L4', waarden: { ...BOVEN.waarden, trechter: '9', ordeNetheid: 'NOK', opmBoven: 'spillage' } }).rij, 7);
+    assert.strictEqual(post({ actie: 'controle', appId: ID3, ...BENEDEN, code: '260104', lijn: 'L4' }).rij, 7);
+    const voor = JSON.stringify([...fx.tab.cellen].map(([k, x]) => [k, x.v instanceof Date ? x.v.getTime() : x.v, x.f]));
+    const s = post({ actie: 'snapshot' });
+    assert.strictEqual(JSON.stringify([...fx.tab.cellen].map(([k, x]) => [k, x.v instanceof Date ? x.v.getTime() : x.v, x.f])), voor, 'de snapshot schrijft niets');
+    assert.deepStrictEqual(s.waarschuwingen, []);
+    assert.deepStrictEqual(Object.keys(s.vorige).sort(), ['L4', 'L8'], 'alleen lijnen waar een controle van bestaat; "L4, L6" telt niet voor L6');
+    assert.deepStrictEqual(s.vorige.L4.map((v) => v.rij), [7, 5, 3], 'nieuwste eerst');
+    assert.deepStrictEqual(s.vorige.L8.map((v) => v.rij), [6]);
+    const v = s.vorige.L4[0];
+    assert.deepStrictEqual([v.datum, v.datumTekst, v.code, v.appId], ['2026-10-02', '02-10-2026', '260104', ID3]);
+    assert.deepStrictEqual([v.antwoorden.grdCorrect, v.antwoorden.allergeenEtiket, v.antwoorden.trechter, v.antwoorden.ordeNetheid, v.antwoorden.opmBoven], [true, true, '9', 'NOK', 'spillage']);
+    assert.deepStrictEqual([v.antwoorden.lotZkCorrect, v.antwoorden.operator1, v.antwoorden.checkweger, v.antwoorden.cwGewicht, v.antwoorden.monoDuo, v.antwoorden.snelheid, v.antwoorden.cDi],
+      [true, 'AB', 'NEE', 'NVT', '2', '52', 'NVT'], 'ook de automatische NVT, zoals de sheet ze toont');
+    assert.ok(v.bovenOm && v.benedenOm, 'wanneer Boven en Beneden gecontroleerd zijn');
+    assert.deepStrictEqual(Object.keys(v.fotos).sort(), ['etiket', 'opmerking', 'zk']);
+    // een controle waar alleen Boven van gedaan is: de selectievakjes van Beneden staan uit, er is geen tijdstip
+    assert.ok(!('lijnInRij' in v), 'geen hulpvelden in het antwoord');
+    const b = s.vorige.L4[1];
+    assert.deepStrictEqual([b.appId, b.benedenOm, b.antwoorden.lotZkCorrect, b.antwoorden.operator1], [ID1, '', false, '']);
+    // voor een rij van de app: wat de controleur zag gaat voor op wat de formule van de sheet nu toont
+    assert.deepStrictEqual([v.opzoek.grondstof, v.opzoek.lotGrd, v.opzoek.allergenenBoven, v.opzoek.product, v.opzoek.lotZk, v.opzoek.allergenenBeneden],
+      ['Proteïnepoeder D', '444444', 'melk - soja', 'Voorbeeld Proteïne 100ge', 'LOT: 2600000102', 'melk - soja']);
+    // een vierde controle op L4: alleen de laatste drie gaan mee
+    const ID4 = '44444444-4444-4444-8444-444444444444';
+    assert.strictEqual(post({ actie: 'controle', appId: ID4, ...BOVEN, code: '260101', lijn: 'L4', waarden: { ...BOVEN.waarden, opmBoven: '#3 trechter vervangen' } }).rij, 8);
+    const u = post({ actie: 'snapshot' });
+    assert.deepStrictEqual(u.vorige.L4.map((x) => x.rij), [8, 7, 5], 'rij 3 valt eruit');
+    assert.strictEqual(u.vorige.L4[0].antwoorden.opmBoven, '#3 trechter vervangen', 'een opmerking die met # begint, blijft staan');
+    // een vergeten controle die later onderaan bijgeschreven is met een oudere datum: de datum bepaalt wat het laatst was
+    fx.tab.cel(8, 1).v = new Date(2026, 8, 30);
+    assert.deepStrictEqual(post({ actie: 'snapshot' }).vorige.L4.map((x) => [x.rij, x.datum]), [[7, '2026-10-02'], [5, '2026-10-02'], [8, '2026-09-30']]);
+    // iets anders dan een datum in Tijdstempel: die rij heeft geen datum, de rest werkt gewoon
+    fx.tab.cel(8, 1).v = 5412345678901;
+    const w = post({ actie: 'snapshot' });
+    assert.deepStrictEqual(w.waarschuwingen, []);
+    assert.deepStrictEqual(w.vorige.L4.map((x) => [x.rij, x.datum]), [[7, '2026-10-02'], [5, '2026-10-02'], [8, '']]);
+    fx.tab.cel(8, 2).v = '';
+    // de lijn uit de lijst van het script, ook als ze in de sheet anders geschreven is
+    zet(3, 'B', ' l4 ');
+    fx.tab.cel(5, 2).v = ''; fx.tab.cel(7, 2).v = '';
+    const t = post({ actie: 'snapshot' });
+    assert.deepStrictEqual(t.vorige.L4.map((x) => x.rij), [3]);
+    const oud = t.vorige.L4[0];
+    assert.deepStrictEqual([oud.datum, oud.code, oud.appId, oud.bovenOm], ['2026-10-01', '260001', '', ''], 'een rij die met de hand ingevuld is');
+    assert.deepStrictEqual(oud.opzoek, { product: 'Testklant Kruidenmix 20g', lotZk: 'LOT: 2600000001', thtZk: 'THT: 12/2027', allergenenBeneden: 'Geen Allergenen', inhoud: '', eenheid: '',
+      grondstof: 'Kruidenmix A', lotGrd: '111111', thtGrd: '', allergenenBoven: 'Geen Allergenen' });
+    assert.deepStrictEqual([oud.antwoorden.trechter, oud.antwoorden.opmBoven, oud.antwoorden.grdCorrect, oud.fotos.zk], ['4', 'zeef vervangen', true, 'Foto ZK']);
+  });
+}
+
+test('snapshot: zonder kolom "Lijn" zijn er geen vorige controles, en de rest werkt gewoon', () => {
+  const { fx, post } = opzet();
+  fx.tab.cel(2, 2).v = 'Machine';
+  const s = post({ actie: 'snapshot' });
+  assert.strictEqual(s.ok, true);
+  assert.strictEqual(s.vorige, null);
+  assert.strictEqual(s.orders.length, 5);
 });
 
 test('nakijken() schrijft niets', () => {

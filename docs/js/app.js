@@ -113,9 +113,16 @@ async function werkBalkBij() {
   const t = await sync.toestand();
   const rijen = [];
 
+  // Op het scherm van Boven of Beneden: de vorige controle van de gekozen lijn nakijken.
+  let vorigeKnop = null;
+  if (ingesteld && r[0] === 'c' && (r[2] === 'boven' || r[2] === 'beneden')) {
+    const c = await db.haal('controles', r[1]);
+    if (c) vorigeKnop = knopVorige(c, 'balk-knop', 'vorige-knop', true);
+  }
   rijen.push(h('div', { class: 'balk-rij' },
     !thuis && ingesteld ? h('button', { class: 'balk-knop', id: 'terug', onclick: terug }, '‹ Terug') : null,
     h('h1', { class: 'balk-titel' }, 'QC Rondgang'),
+    vorigeKnop,
     thuis && ingesteld ? h('button', { class: 'balk-knop', id: 'naar-instellingen', onclick: () => ga('#/instellingen') }, 'Instellingen') : null
   ));
 
@@ -149,6 +156,7 @@ async function werkBalkBij() {
         h('button', { class: 'balk-knop', onclick: () => { herlaadNaUpdate = true; swWacht.postMessage('nieuwe-versie'); } }, 'Bijwerken'))));
   }
   $balk.replaceChildren(...rijen);
+  $balk.classList.toggle('met-vorige', !!vorigeKnop); // op een breed scherm maakt de titel dan plaats voor de knop
   planSync(t);
 }
 
@@ -437,6 +445,7 @@ function rondgangRij(c) {
   return h('section', { class: `rb-rij${rood ? ' open' : ''}${bewerk ? '' : ' dicht'}`, 'data-app-id': c.appId, 'data-code': c.code, 'data-stand': stand },
     h('div', { class: 'rb-kop' },
       bewerk ? lijnKeuze(c, rood && !lijn, `lijn-${c.appId}`) : h('span', { class: 'lijn' }, lijn || (c.bron === 'pallet' ? 'Pallet' : '?')),
+      knopVorige(c, 'knop rb-vorige'),
       h('button', { class: 'rij rb-naam', 'data-code': c.code, title: 'Alles van deze controle bekijken', onclick: () => { rbToon = c.appId; ga(`#/c/${c.appId}`); } },
         h('span', { class: 'rij-tekst' }, h('strong', {}, c.code), h('span', {}, c.opzoek.product || 'Code niet in de lijst')),
         h('span', { class: 'chips' }, bovenChip(c), chip('beneden', ben))),
@@ -728,6 +737,91 @@ async function schermControle(appId, deel, groep) {
     M.DELEN.map(deelKaart),
     $weg
   ];
+}
+
+/* ------------------------------------------------------------------ */
+/* Vorige controle op dezelfde lijn (alleen nakijken)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * De knop "Vorige controle". Wat ze toont hangt af van de lijn die nu bij de
+ * controle gekozen is: wijzigt de controleur de lijn, dan toont dezelfde knop
+ * de laatste controle van de nieuwe lijn. Zonder lijn doet de knop niets.
+ */
+function knopVorige(c, klasse, id, metLijn = false) {
+  const lijn = M.lijnVan(c);
+  return h('button', { class: klasse, id, 'data-actie': 'vorige', 'data-lijn': lijn, disabled: !lijn, title: lijn ? `De laatste controle op ${lijn} bekijken` : 'Kies eerst de lijn',
+    onclick: () => toonVorige(lijn, c.appId) }, metLijn && lijn ? `Vorige controle ${lijn}` : 'Vorige controle');
+}
+
+/**
+ * Toont de laatste controle op een lijn, Boven en Beneden samen, in een laag
+ * boven het scherm. Er valt niets aan te wijzigen; "Sluiten" brengt de
+ * controleur terug waar hij was.
+ */
+let vorigeBezig = false; // de laag wordt geopend: een tweede tik telt niet
+
+async function toonVorige(lijn, huidigAppId) {
+  if (!lijn || vorigeBezig) return;
+  vorigeBezig = true;
+  let controles;
+  try {
+    controles = await db.alle('controles');
+  } finally {
+    vorigeBezig = false;
+  }
+  document.querySelectorAll('#vorige').forEach((el) => el.remove());
+  const v = M.vorigeControle(lijn, snapshot, controles, huidigAppId);
+  // De knop "Sluiten" staat op een staande tablet waar de knop in de balk stond:
+  // een dubbele tik mag de laag niet meteen weer sluiten.
+  const geopendOm = Date.now();
+  const sluit = () => { if (Date.now() - geopendOm >= 400) $laag.remove(); };
+  const stand = snapshot ? `Stand van de sheet bij het ophalen van de gegevens (${dagEnUur(snapshot.opgehaaldOm)}). "Verversen" haalt de laatste stand op.` : 'Er zijn nog geen gegevens opgehaald.';
+  // Waarom de app geen laatste controles per lijn heeft, als dat zo is.
+  let zonderLijst = '';
+  if (snapshot && !snapshot.vorige) {
+    const [groot, klein] = String(snapshot.scriptVersie || '').split('.').map(Number);
+    if (!snapshot.scriptVersie) zonderLijst = 'De gegevens op deze tablet zijn opgehaald voor deze versie van de app: tik op "Verversen".';
+    else if (groot < 2 || (groot === 2 && klein < 4)) zonderLijst = `Het script (versie ${snapshot.scriptVersie}) stuurt de laatste controles per lijn nog niet mee: zet versie 2.4.0 online en tik op "Verversen".`;
+    else zonderLijst = 'Het script kon de laatste controles per lijn niet lezen; zie de opmerkingen bij de opgehaalde gegevens op het startscherm.';
+  }
+
+  const blok = (deel, opzoek) => {
+    const d = v.delen[deel];
+    // Van de tablet: alleen een deel dat afgesloten is. Wat nog open staat, is niet doorgestuurd.
+    const ingevuld = v.bron === 'sheet' ? d.stand === 'ingevuld' : d.stand === 'klaar' || d.stand === 'verzonden';
+    const om = v.bron === 'tablet' ? (d.om ? dagEnUur(d.om) : '') : d.om;
+    const standTekst = v.bron === 'tablet'
+      ? { open: 'niet ingevuld', bezig: 'begonnen, niet afgesloten', klaar: 'afgesloten, wacht op verzenden', verzonden: 'verzonden' }[d.stand]
+      : ingevuld ? '' : 'niet ingevuld in deze rij';
+    return h('section', { class: 'vorige-deel', 'data-deel': deel, 'data-ingevuld': String(ingevuld) },
+      h('h3', {}, M.DEELNAAM[deel], [standTekst, om].filter(Boolean).length ? h('small', {}, ` · ${[standTekst, om && `gecontroleerd ${om}`].filter(Boolean).join(' · ')}`) : null),
+      h('dl', { class: 'opzoek' }, opzoek.map(([naam, sleutel]) => [h('dt', {}, naam), h('dd', { 'data-opzoek': sleutel }, v.opzoek[sleutel] || '—')])),
+      ingevuld
+        ? h('div', { class: 'vorige-regels' },
+          M.vorigeRegels(v, deel, snapshot).map((x) => h('div', { class: `vr${x.afwijking ? ' afwijking' : ''}`, 'data-veld': x.id }, h('span', {}, x.naam), h('b', {}, x.waarde))),
+          deel === 'beneden' ? M.FOTOSOORTEN.map((soort) => h('div', { class: 'vr', 'data-foto': soort }, h('span', {}, M.FOTOS[soort].label), h('b', {}, v.fotos[soort] || '—'))) : null)
+        : h('p', { class: 'zacht' }, `${M.DEELNAAM[deel]} is voor deze controle niet ingevuld.`));
+  };
+
+  const $laag = h('div', { class: 'kiezer vorige', id: 'vorige', 'data-lijn': lijn, 'data-bron': v ? v.bron : 'geen', 'data-code': v ? v.code : '' },
+    h('div', { class: 'vorige-kop' },
+      h('h2', {}, `Vorige controle op ${lijn}`),
+      h('button', { class: 'knop hoofd', id: 'vorige-sluiten', onclick: sluit }, 'Sluiten')),
+    !v ? h('div', { class: 'melding wacht', id: 'vorige-geen' },
+      h('strong', {}, `Voor ${lijn} is geen eerdere controle gevonden.`), ' ',
+      zonderLijst || stand)
+      : [
+        h('p', { class: 'vorige-wat' }, h('strong', {}, v.code), v.opzoek.product ? ` · ${v.opzoek.product}` : '', ' · ', isDatum(v.datum) ? datumLang(v.datum) : v.datumTekst || 'datum onbekend'),
+        h('p', { class: 'klein zacht', id: 'vorige-bron' }, v.bron === 'tablet'
+          ? 'Van deze tablet: de laatste controle die hier op deze lijn afgesloten is.'
+          : `Uit de sheet${v.rij ? `, rij ${v.rij}` : ''}. ${stand}`),
+        h('div', { class: 'vorige-delen' },
+          blok('boven', [['Grondstof', 'grondstof'], ['LOT GRD', 'lotGrd'], ['THT GRD', 'thtGrd'], ['Allergenen', 'allergenenBoven']]),
+          blok('beneden', [['Product', 'product'], ['LOT ZK', 'lotZk'], ['THT ZK', 'thtZk'], ['Allergenen', 'allergenenBeneden']]))
+      ],
+    h('p', { class: 'klein zacht' }, 'Alleen om na te kijken: hier kan niets gewijzigd worden.'));
+  document.body.append($laag);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1466,6 +1560,7 @@ async function ververs({ stil = false } = {}) {
   verversBezig = true;
   let gelukt = false;
   await werkBalkBij();
+  const gevraagdOm = Date.now();
   try {
     const s = await roep('snapshot', {}, { timeout: SNAPSHOT_WACHT_MS });
     if (!Array.isArray(s.orders) || !Array.isArray(s.pallets) || !s.velden || !Object.keys(s.velden).length) {
@@ -1475,7 +1570,9 @@ async function ververs({ stil = false } = {}) {
     const zonder = Object.keys(M.VELDEN).filter((id) => M.VELDEN[id].soort === 'keuze' && !M.VELDEN[id].reserve && !(s.velden[id] && s.velden[id].keuzes && s.velden[id].keuzes.length));
     if (zonder.length) throw new Error(`In de sheet ontbreekt de keuzelijst voor: ${zonder.map((id) => M.label(id, s)).join(', ')}.`);
     // Pas na een volledig antwoord wordt de vorige snapshot vervangen.
-    const vers = { orders: s.orders, pallets: s.pallets, velden: s.velden, lijnen: Array.isArray(s.lijnen) ? s.lijnen : null, dag: s.dag || {}, waarschuwingen: s.waarschuwingen || [], bron: s.bron || {}, opgehaaldOm: Date.now() };
+    const vers = { orders: s.orders, pallets: s.pallets, velden: s.velden, lijnen: Array.isArray(s.lijnen) ? s.lijnen : null, dag: s.dag || {}, waarschuwingen: s.waarschuwingen || [], bron: s.bron || {}, opgehaaldOm: Date.now(),
+      // Voor "Vorige controle": de laatste rijen per lijn, en wanneer ernaar gevraagd is.
+      vorige: s.vorige && typeof s.vorige === 'object' ? s.vorige : null, scriptVersie: s.scriptVersie || '', gevraagdOm };
     await db.zet('referentie', vers, 'snapshot');
     snapshot = vers;
     await pasOpenControlesAan();

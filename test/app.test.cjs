@@ -42,14 +42,29 @@ async function kiesLijn(page, lijn) {
   await page.selectOption('#lijn', lijn);
   await page.waitForFunction((l) => { const e = document.querySelector('#lijn'); return e && e.value === l && e.classList.contains('gekozen'); }, lijn);
 }
-/** Start een nieuwe controle. De lijn is nooit vooraf ingevuld; lijn: null laat ze leeg, anders wordt ze meteen gekozen. */
-async function begin(page, code, deel, { tab, lijn = 'L8' } = {}) {
-  await page.goto(srv.appUrl + '#/nieuw');
+/** Voegt een productie toe aan de rondgang van vandaag (zoeken en aantikken). Geeft de rij terug (de laatste met die code). */
+async function voegToe(page, code, { tab } = {}) {
+  await page.goto(srv.appUrl + '#/controles');
   await page.waitForSelector('#zoek');
   await page.click(tab === 'pallet' ? '#tab-pallets' : '#tab-orders'); // het tabblad van de vorige keer blijft staan
+  const aantal = () => page.$$eval(`.rb-rij[data-code="${code}"]`, (e) => e.length);
+  const voor = await aantal();
   await page.fill('#zoek', code);
   await page.click(`#zoek-lijst .rij[data-code="${code}"]`);
-  await page.click(`#start-${deel}`);
+  if (voor) await page.click('#toch-toevoegen'); // er staat vandaag al een controle voor deze code
+  await page.waitForFunction(([c, n]) => document.querySelectorAll(`.rb-rij[data-code="${c}"]`).length > n, [code, voor]);
+  assert.strictEqual(await page.inputValue('#zoek'), '', 'het zoekveld is weer leeg voor de volgende code');
+  return page.locator(`.rb-rij[data-code="${code}"]`).last();
+}
+/**
+ * Start een nieuwe controle en opent een deel op zijn eigen scherm (via de
+ * controle zelf). De lijn is nooit vooraf ingevuld; lijn: null laat ze leeg,
+ * anders wordt ze meteen gekozen. Boven in de rij van de rondgang heeft eigen scenario's.
+ */
+async function begin(page, code, deel, { tab, lijn = 'L8' } = {}) {
+  const rij = await voegToe(page, code, { tab });
+  await rij.locator('.rij').click();
+  await page.click(`#open-${deel}`);
   await page.waitForSelector('#verder');
   assert.strictEqual(await page.inputValue('#lijn'), '', 'de lijn is nooit vooraf ingevuld');
   if (lijn) await kiesLijn(page, lijn);
@@ -245,7 +260,7 @@ async function scenario(naam, fn) {
     assert.strictEqual(await bestaat(page, '#ververs'), false);
     await page.goto(srv.appUrl + '#/controles');
     await page.waitForSelector('#inst-opslaan');
-    assert.strictEqual(await bestaat(page, '#nieuwe-controle'), false, 'ook via een rechtstreekse link alleen het instelscherm');
+    assert.strictEqual(await bestaat(page, '#rondgang'), false, 'ook via een rechtstreekse link alleen het instelscherm');
     await page.fill('#inst-url', srv.scriptUrl);
     await page.fill('#inst-sleutel', 'verkeerd');
     await page.click('#inst-opslaan');
@@ -355,6 +370,450 @@ async function scenario(naam, fn) {
     assert.strictEqual(w(5, 'AT'), 'STOP');
     assert.strictEqual(w(5, 'AS'), '', 'Geen trechter of mes = lege cel');
     assert.strictEqual(w(5, 'AU'), 'Spillage naast de trechter, lijn stilgelegd');
+  });
+
+  // Bediening van één rij in de rondgang (Boven in de rij zelf).
+  const rbRij = (code) => `.rb-rij[data-code="${code}"]`;
+  const rbStand = (page, code) => page.getAttribute(rbRij(code), 'data-stand');
+  async function rbKies(page, code, veld, waarde) {
+    const sel = `${rbRij(code)} section[data-veld="${veld}"] button[data-waarde="${waarde}"]`;
+    await page.click(sel);
+    await page.waitForSelector(sel + '.gekozen');
+  }
+  async function rbLijn(page, code, lijn) {
+    await page.selectOption(`${rbRij(code)} .lijn-keuze select`, lijn);
+    await page.waitForFunction(([s, l]) => { const e = document.querySelector(s); return e && e.value === l && e.classList.contains('gekozen'); }, [`${rbRij(code)} .lijn-keuze select`, lijn]);
+  }
+  async function rbTrechter(page, code, tekst) {
+    const sel = `${rbRij(code)} section[data-veld="trechter"] select`;
+    await page.selectOption(sel, { label: tekst });
+    await page.waitForFunction(([s, t]) => { const e = document.querySelector(s); return e && e.selectedOptions[0] && e.selectedOptions[0].textContent === t; }, [sel, tekst]);
+  }
+
+  await scenario('rondgang boven: de producties onder elkaar met Boven in de rij, niets vooraf ingevuld; één knop sluit de volledige rijen af en omrandt de onvolledige; corrigeren in de rij; alles één keer in de sheet', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await ctx.setOffline(true);
+    await page.click('#tegel-controles');
+    await page.waitForSelector('#rb-leeg');
+    assert.strictEqual(await bestaat(page, '#boven-afsluiten'), false);
+    assert.strictEqual(await page.$$eval('#zoek-lijst .rij', (r) => r.length), 0, 'zonder zoektekst staat de zoeklijst niet in de weg');
+    for (const code of ['260101', '260102', '260103']) await voegToe(page, code);
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((x) => x.dataset.code)), ['260101', '260102', '260103'], 'onder elkaar, in de volgorde van toevoegen');
+    // niets vooraf ingevuld: geen lijn, geen antwoord, ook de trechter niet
+    assert.deepStrictEqual(await page.$$eval('.rb-rij .lijn-keuze select', (e) => e.map((x) => x.value)), ['', '', '']);
+    assert.strictEqual(await page.$$eval('.rb-rij .gekozen', (e) => e.length), 0);
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((x) => x.dataset.stand)), ['open', 'open', 'open']);
+    // zolang niets ingevuld is, sluit de knop niets af en zegt ze dat
+    assert.strictEqual(await page.textContent('#boven-afsluiten'), 'Boven afsluiten');
+    await page.click('#boven-afsluiten');
+    await page.waitForSelector('#rb-bericht.wacht');
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((x) => x.dataset.stand)), ['open', 'open', 'open']);
+    assert.strictEqual(await bestaat(page, '.rb-rij.open'), false);
+    // wat nagekeken moet worden, staat in de rij
+    assert.match(await page.textContent(`${rbRij('260102')} .rb-info`), /Grondstof Proteïnepoeder D.*LOT GRD 444444.*THT GRD 30\/9\/2028.*Allergenen melk - soja/);
+    // de knoppen zijn exact de keuzelijst van de sheet
+    assert.deepStrictEqual(await page.$$eval(`${rbRij('260101')} section[data-veld="ordeNetheid"] button`, (b) => b.map((x) => x.textContent)), OK4);
+    assert.deepStrictEqual(await page.$$eval(`${rbRij('260101')} section[data-veld="trechter"] option`, (o) => o.slice(1).map((x) => x.textContent)), [...TRECHTERS, 'Geen trechter of mes']);
+
+    // rij 1 volledig; rij 2 met een NOK zonder opmerking; rij 3 blijft onaangeroerd
+    await rbLijn(page, '260101', 'L1');
+    await rbKies(page, '260101', 'grdCorrect', 'true'); await rbKies(page, '260101', 'allergeenEtiket', 'true');
+    await rbTrechter(page, '260101', '3'); await rbKies(page, '260101', 'ordeNetheid', 'OK');
+    await rbLijn(page, '260102', 'L8');
+    await rbKies(page, '260102', 'grdCorrect', 'true'); await rbKies(page, '260102', 'allergeenEtiket', 'false');
+    await rbTrechter(page, '260102', 'Geen trechter of mes'); await rbKies(page, '260102', 'ordeNetheid', 'NOK');
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((x) => x.dataset.stand)), ['volledig', 'bezig', 'open']);
+    assert.strictEqual(await page.textContent('#boven-afsluiten'), 'Boven afsluiten: 1 volledig, 1 onvolledig');
+    assert.strictEqual(await bestaat(page, '.rb-rij.open'), false, 'nog niets rood voor de eerste tik op afsluiten');
+
+    await page.click('#boven-afsluiten');
+    await page.waitForSelector('#rb-bericht.ok');
+    assert.match(await page.textContent('#rb-bericht'), /afgesloten voor 1 lijn\./);
+    assert.strictEqual(await rbStand(page, '260101'), 'klaar');
+    assert.strictEqual(await bestaat(page, `${rbRij('260101')} .rb-punten`), false, 'een afgesloten rij is niet meer aan te tikken');
+    assert.deepStrictEqual(await page.$$eval('.rb-rij.open', (e) => e.map((x) => x.dataset.code)), ['260102'], 'alleen de begonnen, onvolledige rij is rood');
+    assert.deepStrictEqual(await page.$$eval(`${rbRij('260102')} .rb-punt.open`, (e) => e.map((x) => x.dataset.veld)), ['opmBoven']);
+    assert.match(await page.textContent('#open-melding'), /1 lijn is nog niet volledig/);
+    await wachtOpTekst(page, /^1 controle wacht/);
+
+    // de opmerking erbij: de rij is volledig; herladen verliest niets
+    await page.fill(`${rbRij('260102')} textarea`, 'allergenetiket ontbrak op de big bag');
+    await page.reload();
+    await page.waitForSelector(rbRij('260102'));
+    assert.strictEqual(await page.inputValue(`${rbRij('260102')} textarea`), 'allergenetiket ontbrak op de big bag');
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((x) => x.dataset.stand)), ['klaar', 'volledig', 'open']);
+    await page.click('#boven-afsluiten');
+    await page.waitForFunction((s) => document.querySelector(s).dataset.stand === 'klaar', rbRij('260102'));
+    assert.strictEqual(w(5, 'I'), '', 'zonder verbinding staat er nog niets in de sheet');
+    // een rij waarin alleen een opmerking getypt is, telt als begonnen en wordt rood; een rij die daarna begonnen wordt, niet
+    await page.click(`${rbRij('260103')} textarea`);
+    await page.keyboard.type('x');
+    await page.click('#boven-afsluiten');
+    await page.waitForSelector(`${rbRij('260103')}.open`);
+    await page.fill(`${rbRij('260103')} textarea`, '');
+
+    await ctx.setOffline(false);
+    // Tijdens het verzenden typt de controleur verder in een andere rij: het veld blijft staan.
+    await rbKies(page, '260103', 'grdCorrect', 'true');
+    await page.click(`${rbRij('260103')} textarea`);
+    await page.keyboard.type('zeef nagekeken');
+    await allesVerzonden(page);
+    assert.strictEqual(await page.inputValue(`${rbRij('260103')} textarea`), 'zeef nagekeken');
+    assert.strictEqual(await page.evaluate(() => document.activeElement.tagName), 'TEXTAREA', 'de cursor staat nog in het veld');
+    // Zonder verbinding afgesloten: welke van de twee eerst aankomt, ligt niet vast.
+    const r1 = [5, 6].find((r) => w(r, 'I') === 260101);
+    const r2 = [5, 6].find((r) => w(r, 'I') === 260102);
+    assert.ok(r1 && r2, 'elk één rij in de sheet');
+    assert.deepStrictEqual([w(r1, 'B'), w(r1, 'AP'), w(r1, 'AR'), w(r1, 'AS'), w(r1, 'AT'), w(r1, 'AU')], ['L1', true, true, 3, 'OK', '']);
+    assert.deepStrictEqual([w(r2, 'B'), w(r2, 'AP'), w(r2, 'AR'), w(r2, 'AS'), w(r2, 'AT'), w(r2, 'AU')], ['L8', true, false, '', 'NOK', 'allergenetiket ontbrak op de big bag']);
+    assert.strictEqual(w(7, 'I'), '', 'de rij die niet afgesloten is, staat niet in de sheet');
+    assert.strictEqual(acties('controle'), 2);
+    // de statussen zijn bijgewerkt zonder het scherm opnieuw te tekenen
+    await page.waitForFunction((s) => document.querySelector(s).dataset.stand === 'verzonden', rbRij('260101'));
+    assert.strictEqual(await chip(page, '260102', 'boven'), 'verzonden');
+    assert.match(await page.textContent(`${rbRij('260102')} .rb-vast`), /Trechter \+ mes\? Geen trechter of mes.*NOK.*allergenetiket ontbrak/);
+
+    // corrigeren in de rij: zelfde rij in de sheet
+    await page.click(`${rbRij('260101')} [data-actie="corrigeren"]`);
+    await page.waitForSelector(`${rbRij('260101')} .rb-punten`);
+    assert.strictEqual(await page.inputValue(`${rbRij('260101')} .lijn-keuze select`), 'L1', 'de antwoorden van daarnet staan er nog');
+    await rbTrechter(page, '260101', '5');
+    await page.click('#boven-afsluiten');
+    await page.waitForFunction((s) => document.querySelector(s).dataset.stand !== 'volledig', rbRij('260101'));
+    await allesVerzonden(page);
+    assert.strictEqual(w(r1, 'AS'), 5);
+    assert.strictEqual(w(7, 'I'), '', 'een correctie maakt geen nieuwe rij');
+  });
+
+  await scenario('rondgang: een dubbele tik op een zoekresultaat maakt één controle en raakt geen antwoord van een andere rij; een lege rij kan met één tik weer weg; de tabbladen tonen de lijst ook zonder zoektekst', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await voegToe(page, '260101');
+    await voegToe(page, '260102');
+    // dubbele tik op het resultaat: de lijst klapt dicht en de rijen schuiven onder de vinger
+    await page.fill('#zoek', '260103');
+    const plek = await page.locator('#zoek-lijst .rij[data-code="260103"]').boundingBox();
+    const x = plek.x + plek.width / 2;
+    const y = plek.y + plek.height / 2;
+    await page.touchscreen.tap(x, y);
+    await page.touchscreen.tap(x, y); // nog voor de lijst opnieuw getekend is
+    await page.waitForSelector(rbRij('260103'));
+    // en een tik vlak na het verschuiven, precies op een antwoord van een andere rij
+    const nok = await page.locator(`${rbRij('260101')} section[data-veld="ordeNetheid"] button[data-waarde="NOK"]`).boundingBox();
+    await page.touchscreen.tap(nok.x + nok.width / 2, nok.y + nok.height / 2);
+    await page.waitForTimeout(700);
+    assert.strictEqual(await page.$$eval(rbRij('260103'), (e) => e.length), 1, 'één controle, geen tweede');
+    assert.strictEqual(await bestaat(page, '#bestaat-al'), false);
+    assert.strictEqual(await page.evaluate(() => location.hash), '#/controles', 'de tweede tik opende niets');
+    assert.strictEqual(await page.$$eval('.rb-rij .gekozen', (e) => e.length), 0, 'de tweede tik zette geen antwoord in een andere rij');
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((r) => r.dataset.stand)), ['open', 'open', 'open']);
+    // na die halve seconde werkt de rij gewoon
+    await rbKies(page, '260103', 'grdCorrect', 'true');
+
+    // een rij die er per vergissing staat en waar nog niets in gebeurd is: één tik en ze is weg
+    assert.strictEqual(await bestaat(page, `${rbRij('260103')} [data-actie="weg"]`), false, 'niet meer zodra er iets ingevuld is');
+    await rbLijn(page, '260102', 'L8');
+    assert.strictEqual(await bestaat(page, `${rbRij('260102')} [data-actie="weg"]`), false, 'ook niet zodra de lijn gekozen is');
+    await page.click(`${rbRij('260101')} [data-actie="weg"]`);
+    await page.waitForSelector(rbRij('260101'), { state: 'detached' });
+    assert.deepStrictEqual(await page.$$eval('.rb-rij', (e) => e.map((r) => r.dataset.code)), ['260102', '260103']);
+
+    // "staat al in de lijst" blijft niet hangen als die controle intussen verwijderd is
+    await page.fill('#zoek', '260102');
+    await page.click('#zoek-lijst .rij[data-code="260102"]');
+    await page.waitForSelector('#bestaat-al');
+    await page.click('.rij.rb-naam[data-code="260102"]');
+    await page.click('#verwijder');
+    await page.click('#verwijder-ja');
+    await page.waitForSelector('#rondgang');
+    assert.strictEqual(await bestaat(page, '#bestaat-al'), false);
+    assert.strictEqual(await page.inputValue('#zoek'), '');
+
+    // zonder zoektekst toont een tik op het tabblad de lijst; een tweede tik sluit ze
+    assert.strictEqual(await page.$$eval('#zoek-lijst .rij', (r) => r.length), 0);
+    await page.click('#tab-pallets');
+    await page.waitForSelector('#zoek-lijst .rij[data-code="50001"]');
+    assert.strictEqual(await page.$$eval('#zoek-lijst .rij', (r) => r.length), 4);
+    await page.click('#tab-pallets');
+    await page.waitForFunction(() => document.querySelectorAll('#zoek-lijst .rij').length === 0);
+    await page.click('#tab-orders');
+    await page.waitForSelector('#zoek-lijst .rij[data-code="260101"]');
+  });
+
+  await scenario('rondgang: zijn lot of allergenen gewijzigd bij het verversen, dan sluit "Boven afsluiten" die rij pas af nadat de controleur op Gezien tikte; "Gezien" in de sheet is wat hij zag', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await voegToe(page, '260101');
+    await voegToe(page, '260102');
+    for (const [code, lijn] of [['260101', 'L1'], ['260102', 'L8']]) {
+      await rbLijn(page, code, lijn);
+      await rbKies(page, code, 'grdCorrect', 'true'); await rbKies(page, code, 'allergeenEtiket', 'true');
+      await rbTrechter(page, code, '7'); await rbKies(page, code, 'ordeNetheid', 'OK');
+    }
+    // de productielijst wijzigt; de controleur ververst
+    srv.staat.fx.pTab.cel(6, 9).v = '444999'; // LOT GRD van 260102
+    await page.click('#ververs');
+    await page.waitForFunction(() => /Gegevens ververst om \d\d:\d\d/.test((document.querySelector('#melding.ok') || {}).textContent || ''));
+    assert.match(await page.textContent(`${rbRij('260102')} [data-wijziging]`), /LOT GRD444444 → 444999/);
+    assert.strictEqual(await page.textContent('#boven-afsluiten'), 'Boven afsluiten: 1 volledig, 1 onvolledig');
+    await page.click('#boven-afsluiten');
+    await page.waitForSelector('#rb-bericht.ok');
+    await allesVerzonden(page);
+    assert.strictEqual(w(5, 'I'), 260101);
+    assert.strictEqual(w(6, 'I'), '', 'de rij met gewijzigde gegevens is niet verzonden');
+    assert.deepStrictEqual(await page.$$eval('.rb-rij.open', (e) => e.map((r) => r.dataset.code)), ['260102']);
+    assert.match(await page.textContent('#open-melding'), /gegevens gewijzigd bij het verversen.*Gezien/);
+    assert.strictEqual(await page.getAttribute(rbRij('260102'), 'data-stand'), 'volledig', 'de antwoorden zijn onaangeroerd');
+    // Gezien: nu sluit de rij af, met het lot dat de controleur bevestigd heeft
+    await page.click(`${rbRij('260102')} [data-actie="wijziging-gezien"]`);
+    await page.waitForSelector(`${rbRij('260102')} [data-wijziging]`, { state: 'detached' });
+    assert.strictEqual(await page.textContent('#boven-afsluiten'), 'Boven afsluiten: 1 volledig');
+    await page.click('#boven-afsluiten');
+    await page.waitForFunction((s) => document.querySelector(s).dataset.stand !== 'volledig', rbRij('260102'));
+    await allesVerzonden(page);
+    assert.deepStrictEqual([w(6, 'I'), w(6, 'AP'), w(6, 'BG')], [260102, true, '444999']);
+  });
+
+  // "Vorige controle": wat de laag toont.
+  const vorigeOpen = async (page, knop) => { await page.click(knop); await page.waitForSelector('#vorige'); };
+  // Sluiten telt pas na een korte tel (een dubbele tik op de knop in de balk mag de laag niet meteen sluiten).
+  const vorigeDicht = async (page) => { await page.waitForTimeout(450); await page.click('#vorige-sluiten'); await page.waitForSelector('#vorige', { state: 'detached' }); };
+  const vorigeWat = (page) => page.$eval('#vorige', (e) => [e.dataset.lijn, e.dataset.bron, e.dataset.code]);
+  const vorigeVeld = (page, veld) => page.textContent(`#vorige .vr[data-veld="${veld}"] b`);
+
+  await scenario('vorige controle: de knop toont de laatste controle van de gekozen lijn uit de sheet, Boven en Beneden samen, en volgt de lijn als die wijzigt; er valt niets te wijzigen', async (ctx) => {
+    const page = await pagina(ctx);
+    // In de sheet: rij 3 op L8 (volledig, met een NOK), rij 4 op L1 (alleen Beneden ingevuld). Voor L5 bestaat niets.
+    const zet = (r, l, v) => { srv.staat.fx.tab.cel(r, letterNaarKolom(l), true).v = v; };
+    zet(3, 'B', 'L8'); zet(3, 'J', 'Testklant Kruidenmix 20g'); zet(3, 'K', 'LOT: 2600000001'); zet(3, 'AN', 'Kruidenmix A'); zet(3, 'AO', '111111');
+    zet(3, 'AS', 4); zet(3, 'AU', 'zeef vervangen'); zet(3, 'R', 'CD'); zet(3, 'AF', 'NOK'); zet(3, 'AA', 'sluiting lekt'); zet(3, 'AK', 'Foto ZK');
+    zet(4, 'B', 'L1'); zet(4, 'AP', false); zet(4, 'AR', false); zet(4, 'AT', '');
+    await stelIn(page);
+    await voegToe(page, '260102');
+    const knop = `${rbRij('260102')} [data-actie="vorige"]`;
+    assert.strictEqual(await page.isDisabled(knop), true, 'zonder lijn doet de knop niets');
+    await rbLijn(page, '260102', 'L8');
+    await vorigeOpen(page, knop);
+    assert.deepStrictEqual(await vorigeWat(page), ['L8', 'sheet', '260001']);
+    assert.match(await page.textContent('#vorige .vorige-wat'), /260001 · Testklant Kruidenmix 20g · donderdag 1 oktober 2026/);
+    assert.match(await page.textContent('#vorige-bron'), /Uit de sheet, rij 3\. Stand van de sheet bij het ophalen van de gegevens \(\d\d:\d\d\)/);
+    // Boven en Beneden op hetzelfde scherm, zoals de sheet ze toont
+    assert.deepStrictEqual([await vorigeVeld(page, 'grdCorrect'), await vorigeVeld(page, 'trechter'), await vorigeVeld(page, 'ordeNetheid'), await vorigeVeld(page, 'opmBoven')], ['Ja', '4', 'OK', 'zeef vervangen']);
+    assert.deepStrictEqual([await vorigeVeld(page, 'operatoren'), await vorigeVeld(page, 'checkweger'), await vorigeVeld(page, 'monoDuo'), await vorigeVeld(page, 'snelheid'), await vorigeVeld(page, 'cDi'), await vorigeVeld(page, 'opmBeneden')],
+      ['AB, CD', 'NEE', '1', '50', 'NOK', 'sluiting lekt']);
+    assert.deepStrictEqual(await page.$$eval('#vorige .vr.afwijking', (e) => e.map((x) => x.dataset.veld)), ['cDi'], 'alleen de NOK is rood; "NEE" bij Checkweger is gewoon een antwoord');
+    assert.strictEqual(await page.textContent('#vorige [data-deel="boven"] dd[data-opzoek="lotGrd"]'), '111111');
+    assert.strictEqual(await page.textContent('#vorige .vr[data-foto="zk"] b'), 'Foto ZK');
+    // alleen nakijken: geen invoer, en de enige knop is Sluiten
+    assert.strictEqual(await page.$$eval('#vorige input, #vorige select, #vorige textarea', (e) => e.length), 0);
+    assert.deepStrictEqual(await page.$$eval('#vorige button', (e) => e.map((x) => x.id)), ['vorige-sluiten']);
+    await vorigeDicht(page);
+    assert.strictEqual(await page.$$eval('.rb-rij .gekozen:not(select)', (e) => e.length), 0, 'kijken wijzigt niets aan de controle');
+
+    // de lijn was fout ingegeven: dezelfde knop toont nu de laatste controle van de andere lijn
+    await rbLijn(page, '260102', 'L1');
+    await vorigeOpen(page, knop);
+    assert.deepStrictEqual(await vorigeWat(page), ['L1', 'sheet', '260002']);
+    assert.strictEqual(await page.getAttribute('#vorige [data-deel="boven"]', 'data-ingevuld'), 'false');
+    assert.match(await page.textContent('#vorige [data-deel="boven"]'), /niet ingevuld/);
+    assert.strictEqual(await vorigeVeld(page, 'operatoren'), 'AB');
+    await vorigeDicht(page);
+    await rbLijn(page, '260102', 'L5');
+    await vorigeOpen(page, knop);
+    assert.deepStrictEqual(await vorigeWat(page), ['L5', 'geen', '']);
+    assert.match(await page.textContent('#vorige-geen'), /Voor L5 is geen eerdere controle gevonden/);
+    await vorigeDicht(page);
+
+    // ook op het scherm van Beneden, in de balk; de knop volgt daar de lijn op dezelfde manier
+    await page.click(`${rbRij('260102')} [data-naar="beneden"]`);
+    await page.waitForSelector('#verder');
+    assert.strictEqual(await page.textContent('#vorige-knop'), 'Vorige controle L5');
+    await kiesLijn(page, 'L8');
+    await page.waitForFunction(() => document.querySelector('#vorige-knop').textContent === 'Vorige controle L8');
+    await vorigeOpen(page, '#vorige-knop');
+    assert.deepStrictEqual(await vorigeWat(page), ['L8', 'sheet', '260001']);
+    // een dubbele tik opent één laag en sluit ze niet meteen weer
+    await vorigeDicht(page);
+    const plek = await page.locator('#vorige-knop').boundingBox();
+    await page.touchscreen.tap(plek.x + plek.width / 2, plek.y + plek.height / 2);
+    await page.touchscreen.tap(plek.x + plek.width / 2, plek.y + plek.height / 2);
+    await page.waitForSelector('#vorige');
+    await page.waitForTimeout(300);
+    assert.strictEqual(await page.$$eval('#vorige', (e) => e.length), 1);
+    // Terug verlaat het scherm: de laag gaat mee weg
+    await page.evaluate(() => { location.hash = '#/controles'; });
+    await page.waitForSelector('#rondgang');
+    assert.strictEqual(await bestaat(page, '#vorige'), false);
+  });
+
+  await scenario('vorige controle: een controle die vandaag op deze tablet afgesloten is, gaat voor op de sheet, ook zonder verbinding; de controle waar je mee bezig bent, toont nooit zichzelf', async (ctx) => {
+    const page = await pagina(ctx);
+    srv.staat.fx.tab.cel(3, 2, true).v = 'L3'; // in de sheet: een oudere controle op L3 (260001)
+    await stelIn(page);
+    await ctx.setOffline(true);
+    await voegToe(page, '260101');
+    await rbLijn(page, '260101', 'L3');
+    const knopA = `${rbRij('260101')} [data-actie="vorige"]`;
+    await vorigeOpen(page, knopA);
+    assert.deepStrictEqual(await vorigeWat(page), ['L3', 'sheet', '260001']);
+    await vorigeDicht(page);
+    await rbKies(page, '260101', 'grdCorrect', 'true'); await rbKies(page, '260101', 'allergeenEtiket', 'false');
+    await rbTrechter(page, '260101', '3'); await rbKies(page, '260101', 'ordeNetheid', 'STOP');
+    await page.fill(`${rbRij('260101')} textarea`, 'lijn stilgelegd');
+    await page.click('#boven-afsluiten');
+    await page.waitForFunction((s) => document.querySelector(s).dataset.stand === 'klaar', rbRij('260101'));
+    // een tweede productie op dezelfde lijn: de vorige controle is die van daarnet, nog niet verzonden
+    await voegToe(page, '260103');
+    await rbLijn(page, '260103', 'L3');
+    const knopB = `${rbRij('260103')} [data-actie="vorige"]`;
+    await vorigeOpen(page, knopB);
+    assert.deepStrictEqual(await vorigeWat(page), ['L3', 'tablet', '260101']);
+    assert.match(await page.textContent('#vorige-bron'), /Van deze tablet/);
+    assert.deepStrictEqual([await vorigeVeld(page, 'grdCorrect'), await vorigeVeld(page, 'allergeenEtiket'), await vorigeVeld(page, 'trechter'), await vorigeVeld(page, 'ordeNetheid'), await vorigeVeld(page, 'opmBoven')],
+      ['Ja', 'Nee', '3', 'STOP', 'lijn stilgelegd']);
+    assert.deepStrictEqual(await page.$$eval('#vorige .vr.afwijking', (e) => e.map((x) => x.dataset.veld)), ['allergeenEtiket', 'ordeNetheid']);
+    assert.match(await page.textContent('#vorige [data-deel="boven"] h3'), /afgesloten, wacht op verzenden/);
+    assert.strictEqual(await page.getAttribute('#vorige [data-deel="beneden"]', 'data-ingevuld'), 'false');
+    assert.strictEqual(await page.textContent('#vorige [data-deel="boven"] dd[data-opzoek="lotGrd"]'), '333333', 'het lot dat de controleur toen zag');
+    await vorigeDicht(page);
+    // voor de eerste controle zelf blijft het de rij uit de sheet: ze toont nooit zichzelf, en de tweede is nog niet afgesloten
+    await vorigeOpen(page, knopA);
+    assert.deepStrictEqual(await vorigeWat(page), ['L3', 'sheet', '260001']);
+    await vorigeDicht(page);
+
+    // verzonden en ververst: de rij staat nu in de sheet, en dat is vanaf dan wat de knop toont
+    await ctx.setOffline(false);
+    await allesVerzonden(page);
+    await page.click('#ververs');
+    await page.waitForFunction(() => /Gegevens ververst om \d\d:\d\d/.test((document.querySelector('#melding.ok') || {}).textContent || ''));
+    await vorigeOpen(page, knopB);
+    assert.deepStrictEqual(await vorigeWat(page), ['L3', 'sheet', '260101']);
+    assert.deepStrictEqual([await vorigeVeld(page, 'allergeenEtiket'), await vorigeVeld(page, 'trechter'), await vorigeVeld(page, 'ordeNetheid'), await vorigeVeld(page, 'opmBoven')], ['Nee', '3', 'STOP', 'lijn stilgelegd']);
+    assert.match(await page.textContent('#vorige [data-deel="boven"] h3'), /gecontroleerd \d\d-\d\d-\d{4} \d\d:\d\d/);
+    assert.strictEqual(await page.textContent('#vorige [data-deel="boven"] dd[data-opzoek="lotGrd"]'), '333333', 'uit de kolom "Gezien: LOT GRD": wat de controleur toen zag');
+    await vorigeDicht(page);
+    await vorigeOpen(page, knopA);
+    assert.deepStrictEqual(await vorigeWat(page), ['L3', 'sheet', '260001'], 'de eigen rij in de sheet telt niet mee');
+    await vorigeDicht(page);
+    // de eerste controle hoorde toch op een andere lijn: voor L3 telt ze niet meer mee, ook al staat ze daar nog in de opgehaalde gegevens
+    await page.click(`${rbRij('260101')} [data-actie="corrigeren"]`);
+    await page.waitForSelector(`${rbRij('260101')} .rb-punten`);
+    await rbLijn(page, '260101', 'L7');
+    await vorigeOpen(page, knopB);
+    assert.deepStrictEqual(await vorigeWat(page), ['L3', 'sheet', '260001']);
+  });
+
+  await scenario('vorige controle: welke controle gekozen wordt (regels zonder scherm)', async () => {
+    const path = require('path');
+    const M = await import(require('url').pathToFileURL(path.join(__dirname, '..', 'docs', 'js', 'model.js')).href);
+    const T0 = Date.UTC(2026, 9, 6, 8, 0, 0); // de gegevens zijn om 08:00 gevraagd
+    const deel = (status, om, verzondenOm) => ({ status, antwoorden: {}, fotos: {}, afgeslotenOm: om ? new Date(om).toISOString() : null, verzondenOm: verzondenOm || null, gezien: null, rij: null, versie: 1 });
+    let teller = 0;
+    const controle = (appId, lijn, boven, beneden, datum = '2026-10-06') => ({ appId, code: appId, datum, aangemaaktOm: T0 + (teller += 1000), lijn, lijnZelf: true, opzoek: {}, delen: { boven, beneden } });
+    const open = deel('open');
+    const rij = (n, appId, datum = '2026-10-05') => ({ rij: n, appId: appId || '', code: 'S' + n, datum, antwoorden: {}, opzoek: {}, fotos: {} });
+    const snap = (vorige) => ({ vorige, gevraagdOm: T0, opgehaaldOm: T0 + 11000 });
+    const kies = (lijn, s, cs, huidig) => { const v = M.vorigeControle(lijn, s, cs, huidig); return v ? `${v.bron}:${v.code}` : null; };
+
+    assert.strictEqual(kies('', snap({}), [], 'x'), null, 'zonder lijn niets');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9), rij(7)] }), [], 'x'), 'sheet:S9', 'de nieuwste rij van de sheet');
+    assert.strictEqual(kies('L2', snap({ L1: [rij(9)] }), [], 'x'), null, 'een andere lijn telt niet');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, 'x'), rij(7)] }), [], 'x'), 'sheet:S7', 'de eigen rij wordt overgeslagen');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, 'x')] }), [], 'x'), null);
+    // afgesloten na het ophalen (nog niet verzonden, of pas daarna verzonden): gaat voor
+    const wacht = controle('A', 'L1', deel('klaar', T0 - 3600000), open);          // afgesloten om 07:00, nog niet verzonden
+    const pasVerzonden = controle('B', 'L1', deel('verzonden', T0 + 60000, T0 + 90000), open);
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9)] }), [wacht], 'x'), 'tablet:A');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9)] }), [wacht, pasVerzonden], 'x'), 'tablet:B', 'de recentst afgesloten controle');
+    assert.strictEqual(kies('L3', snap({ L1: [rij(9)] }), [wacht], 'x'), null, 'alleen controles van die lijn');
+    // twee producties op dezelfde lijn in dezelfde rondgang: de tweede ziet de eerste, de eerste ziet de tweede niet
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9)] }), [wacht, pasVerzonden], 'B'), 'tablet:A', 'A is eerder begonnen dan B');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9)] }), [wacht, pasVerzonden], 'A'), 'sheet:S9', 'B is later begonnen dan A: niet "vorige"');
+    // al verzonden voor het ophalen: de sheet weet het minstens even goed (ook na een correctie in de sheet zelf)
+    const oud = controle('C', 'L1', deel('verzonden', T0 - 86400000, T0 - 86000000), deel('verzonden', T0 - 80000000, T0 - 79000000), '2026-10-05');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9), rij(7)] }), [oud], 'x'), 'sheet:S9', 'niet bij de laatste rijen van de sheet: er zijn nieuwere');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, 'C'), rij(7)] }), [oud], 'x'), 'sheet:S9', 'dezelfde controle: de rij van de sheet');
+    // Boven voor het ophalen verzonden, Beneden daarna afgesloten: nieuwer dan de sheet
+    const half = controle('D', 'L1', deel('verzonden', T0 - 7200000, T0 - 7100000), deel('klaar', T0 + 600000));
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, 'D'), rij(7)] }), [half], 'x'), 'tablet:D');
+    // een controle die op de tablet naar een andere lijn verplaatst is: haar oude rij in de sheet telt niet meer voor de oude lijn
+    const verplaatst = controle('F', 'L2', deel('verzonden', T0 - 7200000, T0 - 7100000), open);
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, 'F'), rij(7)] }), [verplaatst], 'x'), 'sheet:S7');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, 'F')] }), [verplaatst], 'x'), null);
+    // een controle die hier al dagen op verzenden wacht, wijkt voor een rij met een latere datum in de sheet
+    const blijftHangen = controle('G', 'L1', deel('klaar', T0 - 3 * 86400000), open, '2026-10-03');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9)] }), [blijftHangen], 'x'), 'sheet:S9');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, '', '2026-10-02')] }), [blijftHangen], 'x'), 'tablet:G');
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9, '', '')] }), [blijftHangen], 'x'), 'tablet:G', 'een rij zonder datum in de sheet beslist niets');
+    // een deel dat alleen begonnen is, is niet doorgestuurd
+    assert.strictEqual(kies('L1', snap({ L1: [rij(9)] }), [controle('E', 'L1', deel('bezig'), open)], 'x'), 'sheet:S9');
+    // het script stuurt de lijst nog niet mee (oudere versie): alleen wat de tablet zelf kent
+    assert.strictEqual(kies('L1', { opgehaaldOm: T0 }, [oud], 'x'), 'tablet:C');
+    assert.strictEqual(kies('L1', { opgehaaldOm: T0 }, [], 'x'), null);
+    assert.strictEqual(kies('L1', null, [oud], 'x'), 'tablet:C');
+  });
+
+  await scenario('vanuit de rondgang naar Beneden en terug: één tik opent Beneden met het blok van Boven, Terug en afsluiten komen weer in de lijst uit', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await voegToe(page, '260101');
+    await voegToe(page, '260102');
+    await rbLijn(page, '260102', 'L8');
+    await rbKies(page, '260102', 'grdCorrect', 'true'); await rbKies(page, '260102', 'allergeenEtiket', 'true');
+    await rbTrechter(page, '260102', '7'); await rbKies(page, '260102', 'ordeNetheid', 'OK');
+    await page.click('#boven-afsluiten');
+    await page.waitForSelector('#rb-bericht.ok');
+    await allesVerzonden(page);
+    assert.strictEqual(await page.textContent(`${rbRij('260102')} [data-naar="beneden"]`), 'Beneden starten');
+    await page.click(`${rbRij('260102')} [data-naar="beneden"]`);
+    await page.waitForSelector('#verder');
+    assert.match(await page.textContent('#blok-boven'), /Boven: afgesloten om \d\d:\d\d/);
+    assert.match(await page.textContent('#blok-boven'), /Trechter \+ mes\?\s*7/);
+    assert.strictEqual(await page.inputValue('#lijn'), 'L8', 'de lijn van Boven geldt ook voor Beneden');
+    await page.click('#terug');
+    await page.waitForSelector('#rondgang');
+    assert.strictEqual(await bestaat(page, '#kop-controle'), false, 'Terug gaat naar de lijst, niet naar het scherm van de controle');
+    await page.click(`${rbRij('260102')} [data-naar="beneden"]`);
+    await page.waitForSelector('#verder');
+    await vulBenedenPunten(page);
+    await verder(page);
+    await page.waitForSelector('#rondgang');
+    assert.match(await page.textContent('#melding'), /Beneden is afgesloten voor 260102\./);
+    await allesVerzonden(page);
+    await page.waitForFunction((s) => document.querySelector(s).textContent === 'Beneden bekijken', `${rbRij('260102')} [data-naar="beneden"]`);
+    assert.strictEqual(await chip(page, '260102', 'beneden'), 'verzonden');
+    assert.strictEqual(await chip(page, '260101', 'beneden'), 'open');
+    assert.deepStrictEqual([w(5, 'I'), w(5, 'B'), w(5, 'AS'), w(5, 'Y')], [260102, 'L8', 7, 2]);
+    assert.strictEqual(w(6, 'I'), '', 'Boven en Beneden staan in dezelfde rij');
+  });
+
+  await scenario('werkmaterialen boven toont op welke lijn een trechter vandaag in de rondgang boven aangeduid is', async (ctx) => {
+    const page = await pagina(ctx);
+    await stelIn(page);
+    await page.click('#tegel-werk');
+    await page.waitForSelector('#dag');
+    assert.strictEqual(await page.$$eval('.dag-tegel[data-gebruik]', (e) => e.length), 0, 'zonder rondgang boven staat er geen label');
+    await voegToe(page, '260101');
+    await voegToe(page, '260102');
+    await voegToe(page, '260103');
+    await rbLijn(page, '260101', 'L1'); await rbTrechter(page, '260101', '3');     // aangeduid, nog niet afgesloten
+    await rbLijn(page, '260102', 'L8'); await rbTrechter(page, '260102', '3');     // dezelfde trechter op een tweede lijn
+    await rbTrechter(page, '260103', '1');                                           // nog geen lijn gekozen
+    await voegToe(page, '260104');
+    await rbLijn(page, '260104', 'L1'); await rbTrechter(page, '260104', '3');     // een tweede productie op dezelfde lijn
+    await page.goto(srv.appUrl + '#/dag/werk');
+    await page.waitForSelector('#dag');
+    const gebruik = await page.$$eval('.dag-tegel', (e) => Object.fromEntries(e.filter((x) => x.dataset.gebruik).map((x) => [x.querySelector('strong').textContent, [x.dataset.gebruik, x.querySelector('.dag-gebruik').textContent]])));
+    assert.deepStrictEqual(gebruik, { 'Trechter 1 - Vierkant': ['260103', 'op 260103'], 'Trechter 3 - Klein': ['L1 (260101, 260104), L8 (260102)', 'op L1, L8'] });
+    // het label verandert niets aan de controle zelf: niets aangetikt = alles OK
+    assert.match(await page.textContent('#verder'), /alle 9 punten OK/);
+    // "Geen trechter of mes" geeft geen label
+    await page.goto(srv.appUrl + '#/controles');
+    await rbTrechter(page, '260103', 'Geen trechter of mes');
+    await page.goto(srv.appUrl + '#/dag/werk');
+    await page.waitForSelector('#dag');
+    assert.deepStrictEqual(await page.$$eval('.dag-tegel[data-gebruik]', (e) => e.map((x) => x.dataset.gebruik)), ['L1 (260101, 260104), L8 (260102)']);
   });
 
   await scenario('vliegtuigmodus: Boven voor drie lijnen, app sluiten en heropenen, Beneden toont Boven; daarna alles één keer in de sheet', async (ctx) => {
@@ -571,7 +1030,8 @@ async function scenario(naam, fn) {
     await page.waitForFunction(() => /Gegevens ververst om \d\d:\d\d/.test((document.querySelector('#melding.ok') || {}).textContent || ''));
     await wachtOpTekst(page, /1 controle wacht/);
     // nieuwe order staat in de lijst
-    await page.goto(srv.appUrl + '#/nieuw');
+    await page.goto(srv.appUrl + '#/controles');
+    await page.fill('#zoek', '260108');
     await page.waitForSelector('#zoek-lijst .rij[data-code="260108"]');
     // de open controle: antwoorden onaangeroerd, verschil getoond
     await page.goto(srv.appUrl + '#/controles');
@@ -608,7 +1068,8 @@ async function scenario(naam, fn) {
     await page.waitForSelector('#melding.fout');
     assert.match(await page.textContent('#melding'), /Verversen mislukt, gegevens van \d\d:\d\d blijven in gebruik/);
     assert.strictEqual(await page.textContent('#gegevens span'), gegevens);
-    await page.goto(srv.appUrl + '#/nieuw');
+    await page.goto(srv.appUrl + '#/controles');
+    await page.fill('#zoek', '26');
     await page.waitForSelector('#zoek-lijst .rij[data-code="260101"]');
     assert.strictEqual(await page.$$eval('#zoek-lijst .rij', (r) => r.length), 5);
     // een onvolledig antwoord van het script wordt ook nooit gebruikt
@@ -659,14 +1120,15 @@ async function scenario(naam, fn) {
   await scenario('code die niet in de lijst staat: verversen of intypen; de rij komt in de sheet', async (ctx) => {
     const page = await pagina(ctx);
     await stelIn(page);
-    await page.goto(srv.appUrl + '#/nieuw');
+    await page.goto(srv.appUrl + '#/controles');
     await page.fill('#zoek', '269999');
     await page.waitForSelector('#niet-gevonden');
     assert.ok(await page.$('#zoek-ververs'), 'het zoekscherm biedt verversen aan');
     await page.click('#code-intypen');
-    await page.waitForSelector('#keuze-kaart');
-    assert.match(await page.textContent('#keuze-kaart'), /staat niet in de opgehaalde gegevens/);
-    await page.click('#start-boven');
+    await page.waitForSelector('.rb-rij[data-code="269999"]');
+    assert.match(await page.textContent('.rb-rij[data-code="269999"] .rb-info'), /staat niet in de opgehaalde gegevens/);
+    await page.click('.rij[data-code="269999"]');
+    await page.click('#open-boven');
     await page.waitForSelector('#verder');
     await kiesLijn(page, 'L3');
     await vulBoven(page);
@@ -685,15 +1147,18 @@ async function scenario(naam, fn) {
     assert.strictEqual(await page.textContent('dd[data-opzoek="grondstof"]'), 'KRUIDENMIX TACO 01');
     assert.strictEqual(await page.textContent('dd[data-opzoek="lotGrd"]'), '439001');
     await vulBoven(page);
-    await page.goto(srv.appUrl + '#/nieuw');
+    await page.goto(srv.appUrl + '#/controles');
     await page.click('#tab-pallets');
+    await page.fill('#zoek', '50001');
     await page.click('#zoek-lijst .rij[data-code="50001"]');
     await page.waitForSelector('#bestaat-al');
-    await page.goto(srv.appUrl + '#/controles');
+    assert.strictEqual(await page.$$eval('.rb-rij[data-code="50001"]', (e) => e.length), 1, 'niet stil een tweede controle');
+    await page.click('#toon-bestaande');
+    await page.waitForSelector('#bestaat-al', { state: 'detached' });
     await page.click('.rij[data-code="50001"]');
     await page.click('#verwijder');
     await page.click('#verwijder-ja');
-    await page.waitForSelector('#nieuwe-controle');
+    await page.waitForSelector('#rondgang');
     assert.strictEqual(await bestaat(page, '.rij[data-code="50001"]'), false);
     await ctx.setOffline(false);
     await allesVerzonden(page);
@@ -975,7 +1440,8 @@ async function scenario(naam, fn) {
     const fB = (r) => srv.staat.fx.tab.cel(r, 2).f;
     const LIJNEN = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'MUL', 'STICKS', 'GELPACK 1', 'GELPACK 2', 'VOLPAK'];
     // zoeken: geen lijn in de lijst en geen filter op lijn
-    await page.goto(srv.appUrl + '#/nieuw');
+    await page.goto(srv.appUrl + '#/controles');
+    await page.fill('#zoek', '26');
     await page.waitForSelector('#zoek-lijst .rij[data-code="260104"]');
     assert.strictEqual(await bestaat(page, '#lijn-filter'), false);
     assert.strictEqual(await bestaat(page, '#zoek-lijst .lijn'), false);
@@ -1140,7 +1606,7 @@ async function scenario(naam, fn) {
     await wachtOpTekst(page, /^1 controle en 2 foto's wachten/);
     await page.click('#verwijder');
     await page.click('#verwijder-ja');
-    await page.waitForSelector('#nieuwe-controle');
+    await page.waitForSelector('#rondgang');
     await allesVerzonden(page);
     const telling = await page.evaluate(async () => new Promise((res) => { const r = indexedDB.open('qc-rondgang'); r.onsuccess = () => { const tx = r.result.transaction(['fotos', 'wachtrij']); const a = tx.objectStore('fotos').count(); const b = tx.objectStore('wachtrij').count(); tx.oncomplete = () => res([a.result, b.result]); }; }));
     assert.deepStrictEqual(telling, [0, 0]);
@@ -1222,8 +1688,10 @@ async function scenario(naam, fn) {
     await page.fill('[data-invoer="meting-2"]', 'warm');
     // NOK zonder opmerking blijft open; de andere punten OK
     await vulDagScherm(page, { [MAGAZIJN_PUNTEN[1].kop]: '' });
+    // Een merkteken op de knop: zo is zeker dat het scherm na de tik opnieuw getekend is.
+    await page.evaluate(() => { document.querySelector('#verder').dataset.oud = '1'; });
     await page.click('#verder');
-    await page.waitForFunction(() => document.querySelectorAll('.punt.open').length === 2); // opnieuw getekend: de foute meting en de NOK zonder opmerking
+    await page.waitForFunction(() => !document.querySelector('#verder').dataset.oud && document.querySelectorAll('.punt.open').length === 2); // de foute meting en de NOK zonder opmerking
     assert.deepStrictEqual(await page.$$eval('.punt.open', (els) => els.map((e) => e.dataset.meting || e.dataset.punt)), ['Luchtvochtigheid magazijn (in %)20,7', MAGAZIJN_PUNTEN[1].kop]);
     assert.strictEqual(await page.evaluate(() => location.hash), hash, 'nog op hetzelfde scherm');
     assert.strictEqual(acties('dagcontrole'), 0);

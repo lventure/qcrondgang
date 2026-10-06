@@ -371,6 +371,120 @@ export function bouwDagVerzoek(dc, snapshot) {
   return { soort: dc.soort, datum: dc.datum, afgeslotenOm: dc.afgeslotenOm, metingen, punten };
 }
 
+/* ------------------------------------------------------------------ */
+/* Vorige controle op een lijn (alleen om na te kijken)                */
+/* ------------------------------------------------------------------ */
+
+const isGesloten = (d) => d.status === 'klaar' || d.status === 'verzonden';
+
+/** Een rij uit de sheet: is dit deel ingevuld? Een leeg selectievakje of een automatische NVT zegt niets. */
+function deelIngevuldInSheet(rij, deel) {
+  if (rij[`${deel}Om`]) return true;
+  const a = rij.antwoorden || {};
+  return veldenVan(deel).some((id) => {
+    const v = VELDEN[id];
+    if (v.soort === 'vakje') return a[id] === true;
+    if (v.soort === 'meer') return !!(a.operator1 || a.operator2);
+    if (v.nvtAls) return false;
+    return a[id] !== undefined && a[id] !== null && String(a[id]).trim() !== '';
+  });
+}
+
+function vorigeUitSheet(rij, lijn) {
+  const deel = (d) => ({ stand: deelIngevuldInSheet(rij, d) ? 'ingevuld' : 'leeg', om: rij[`${d}Om`] || '', antwoorden: rij.antwoorden || {} });
+  return {
+    bron: 'sheet', lijn, datum: rij.datum || '', datumTekst: rij.datumTekst || '', code: String(rij.code || ''), appId: rij.appId || '', rij: rij.rij || null,
+    opzoek: rij.opzoek || {}, delen: { boven: deel('boven'), beneden: deel('beneden') }, fotos: rij.fotos || {}
+  };
+}
+
+function vorigeVanTablet(c, rij) {
+  const b = c.delen.boven;
+  const n = c.delen.beneden;
+  // Wat de controleur zag bij het afsluiten; voor een deel dat nog open is: wat er nu staat.
+  const zag = (d) => (isGesloten(d) && d.gezien) || c.opzoek || {};
+  const foto = (ref) => (ref && ref.fotoId ? 'foto genomen' : ref && ref.nvt ? 'NVT' : '');
+  const deel = (d) => ({ stand: d.status, om: d.afgeslotenOm || '', antwoorden: d.antwoorden });
+  return {
+    bron: 'tablet', lijn: lijnVan(c), datum: c.datum, datumTekst: '', code: c.code, appId: c.appId, rij: rij || b.rij || n.rij || null,
+    opzoek: {
+      product: zag(n).product || c.opzoek.product || '', lotZk: zag(n).lotZk || '', thtZk: zag(n).thtZk || '', allergenenBeneden: zag(n).allergenen || '',
+      grondstof: zag(b).grondstof || '', lotGrd: zag(b).lotGrd || '', thtGrd: zag(b).thtGrd || '', allergenenBoven: zag(b).allergenen || ''
+    },
+    delen: { boven: deel(b), beneden: deel(n) },
+    fotos: Object.fromEntries(FOTOSOORTEN.map((soort) => [soort, isGesloten(n) ? foto(n.fotos && n.fotos[soort]) : '']))
+  };
+}
+
+/**
+ * De laatste controle op een lijn, om na te kijken tijdens een nieuwe controle.
+ *   - een controle van deze tablet die afgesloten is nadat de gegevens
+ *     opgehaald werden (verzonden of nog wachtend) en die eerder begonnen is
+ *     dan de controle van nu; de recentst afgesloten eerst;
+ *   - anders de laatste rij van die lijn in de sheet, zoals ze meekwam met de
+ *     gegevens (snapshot.vorige). De sheet is dan minstens even volledig als
+ *     wat de tablet nog weet, ook na een correctie in de sheet zelf.
+ * De controle waar de controleur nu mee bezig is (huidigAppId) telt nooit mee.
+ * Geeft null als er voor die lijn niets bekend is.
+ */
+export function vorigeControle(lijn, snapshot, controles, huidigAppId) {
+  if (!lijn) return null;
+  const lijst = controles || [];
+  const huidig = lijst.find((c) => c.appId === huidigAppId) || null;
+  const opTablet = new Map(lijst.map((c) => [c.appId, c]));
+  const heeftLijst = !!(snapshot && snapshot.vorige);
+  // De rij van de sheet: niet de eigen rij, en niet de rij van een controle die
+  // op deze tablet intussen naar een andere lijn verplaatst is.
+  const rij = ((heeftLijst && snapshot.vorige[lijn]) || []).find((r) => {
+    if (!r.appId) return true;
+    if (r.appId === huidigAppId) return false;
+    const c = opTablet.get(r.appId);
+    return !(c && lijnVan(c) && lijnVan(c) !== lijn);
+  }) || null;
+  // Wat voor dit tijdstip verzonden is, stond al in de sheet toen de gegevens gelezen werden.
+  const om = heeftLijst ? snapshot.gevraagdOm || snapshot.opgehaaldOm || 0 : 0;
+  const nieuwer = (d) => isGesloten(d) && !(d.status === 'verzonden' && d.verzondenOm && d.verzondenOm <= om);
+  const laatst = (c) => Math.max(...DELEN.map((d) => (isGesloten(c.delen[d]) ? Date.parse(c.delen[d].afgeslotenOm) || 0 : 0)));
+  const eigen = lijst
+    .filter((c) => c.appId !== huidigAppId && lijnVan(c) === lijn && DELEN.some((d) => nieuwer(c.delen[d])))
+    // "Vorige" is eerder begonnen dan de controle van nu: twee producties op
+    // dezelfde lijn in dezelfde rondgang tonen niet elkaar.
+    .filter((c) => !huidig || (c.aangemaaktOm || 0) < (huidig.aangemaaktOm || 0))
+    .sort((x, y) => laatst(y) - laatst(x));
+  const beste = eigen[0] || null;
+  // Een rij met een latere datum in de sheet is recenter dan een controle die hier al dagen op verzenden wacht.
+  if (beste && !(rij && rij.datum && beste.datum && rij.datum > beste.datum)) return vorigeVanTablet(beste);
+  return rij ? vorigeUitSheet(rij, lijn) : null;
+}
+
+const isNokOfStop = (tekst) => ['nok', 'stop'].includes(String(tekst).trim().toLowerCase());
+
+/**
+ * De antwoorden van één deel van een vorige controle als regels om te tonen:
+ * [{ id, naam, waarde, afwijking }]. Uit de sheet: zoals de sheet ze toont.
+ */
+export function vorigeRegels(v, deel, snapshot) {
+  const a = v.delen[deel].antwoorden || {};
+  return veldenVan(deel).map((id) => {
+    const veld = VELDEN[id];
+    let waarde;
+    if (veld.soort === 'meer') {
+      waarde = (v.bron === 'sheet' ? [a.operator1, a.operator2].filter((x) => x && String(x).trim()) : operatorLijst(a)).join(', ');
+    } else if (v.bron === 'tablet' && isVervallen(id, a)) {
+      waarde = 'NVT';
+    } else if (veld.soort === 'vakje') {
+      waarde = a[id] === true ? 'Ja' : a[id] === false ? 'Nee' : '';
+    } else if (v.bron === 'tablet' && a[id] === '' && veld.leegKeuze) {
+      waarde = veld.leegKeuze;
+    } else {
+      waarde = a[id] === undefined || a[id] === null ? '' : String(a[id]);
+    }
+    // Rood: een NOK of STOP, of "Nee" op een vraag of iets correct is. "NEE" bij Checkweger? is gewoon een antwoord.
+    const afwijking = veld.soort === 'vakje' ? a[id] === false : veld.soort === 'keuze' && isNokOfStop(waarde);
+    return { id, naam: label(id, snapshot).split(':')[0], waarde: waarde.trim() || '—', afwijking };
+  });
+}
+
 /** Zoekt een code in de snapshot. */
 export function zoekCode(snapshot, code) {
   const c = String(code).trim();

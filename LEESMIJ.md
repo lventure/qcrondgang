@@ -4,7 +4,7 @@ Webapp voor de dagelijkse kwaliteitsrondgang op een Android-tablet. Werkt zonder
 
 Gebouwd zijn fase 1 tot 3: de productiecontroles (Boven en Beneden, elk op één scherm), de twee foto's per controle, en de dagcontroles "Werkmaterialen boven" en "Magazijn en bufferzone". Fase 4, de overstap naar de echte sheet, is niet begonnen: alles hieronder gebeurt op de testkopie.
 
-Versies in deze map: script 2.3.0 (`apps-script/Code.gs`), app 1.6.3 (`docs/js/versie.js` en `docs/sw.js`).
+Versies in deze map: script 2.4.0 (`apps-script/Code.gs`), app 1.8.0 (`docs/js/versie.js` en `docs/sw.js`).
 
 Kolomletters in dit document zijn die van de testkopie op 5 oktober 2026, na het toevoegen van "THT ZK" (L) en "THT GRD" (AQ). Het script zoekt elke kolom op haar naam in rij 2, niet op haar letter: een kolom toevoegen of verplaatsen breekt niets, een kolom hernoemen wel.
 
@@ -20,7 +20,16 @@ Er staan geen sleutels, geen spreadsheet-ID's en geen klant- of productnamen in 
 
 De app staat op `https://lventureapps.github.io/qcrondgang/` (organisatie `lventureapps`, repository `qcrondgang`, Pages uit `/docs`). Palletscan blijft op `https://lventure.github.io/palletscan/`. Twee installeerbare apps op hetzelfde adres gaan op Android niet samen; daarom staan ze apart.
 
-## Van fase 1 naar fase 2 en 3: wat je nu doet
+## Script 2.4.0 en app 1.8.0 ("Vorige controle"): wat je nu doet
+
+1. Open de testkopie, Extensies > Apps Script. Vervang de inhoud van `Code.gs` door `apps-script/Code.gs` uit deze map. Bewaar. `installeer` hoeft niet opnieuw: er komen geen kolommen bij.
+2. Voer `nakijken` uit (schrijft niets). In het logboek staat nu een regel `Vorige controle per lijn (rij in de sheet): L0: …, L1: 1766 en 1759 en 1751, …`. Kijk voor twee lijnen na of dat de laatste rijen van die lijn zijn. "geen" betekent dat in kolom "Lijn" geen enkele rij precies die lijn toont.
+3. Implementeren > Implementaties beheren > bewerken > Nieuwe versie. Het adres blijft hetzelfde.
+4. Zet de inhoud van `docs/` in de repository en push. Op de tablet: Bijwerken, en daarna "Verversen" (de vorige controles komen mee met de gegevens).
+
+De volgorde van 3 en 4 maakt niet uit: de nieuwe app werkt met het oude script (de knop zegt dan dat het script nog bijgewerkt moet worden) en de oude app werkt met het nieuwe script.
+
+## Van fase 1 naar fase 2 en 3 (al gebeurd)
 
 De volgorde telt. Stap 2 moet voor stap 4.
 
@@ -51,6 +60,16 @@ De volgorde telt. Stap 2 moet voor stap 4.
 
 ## Wat er veranderd is in de app
 
+- **Vorige controle (nieuw in 1.8.0).** In elke rij van de rondgang en bovenaan op het scherm van Boven en Beneden staat de knop "Vorige controle". Ze toont de laatste controle op de lijn die nu bij de controle gekozen is, Boven en Beneden samen op één scherm; er valt niets te wijzigen en "Sluiten" brengt je terug. Wijzig je de lijn, dan toont dezelfde knop de laatste controle van de nieuwe lijn. Zonder lijn doet de knop niets.
+  - Wat ze toont: de laatste rij van die lijn in de sheet, zoals ze meekwam bij het ophalen van de gegevens (het script stuurt per lijn de laatste drie rijen mee). Daar horen ook rijen bij die met de hand in de sheet ingevuld zijn. Een rij waar in kolom "Lijn" een combinatie staat ("L1, L3"), hoort bij geen enkele lijn.
+  - Een controle die daarna op deze tablet afgesloten is (verzonden of nog wachtend, dus ook zonder verbinding), gaat voor, als ze eerder begonnen is dan de controle van nu.
+  - De controle waar je mee bezig bent, toont nooit zichzelf.
+  - Lot, THT en allergenen: voor een rij van de app wat de controleur toen zag (de kolommen "Gezien: …"), anders wat de formules van de sheet nu tonen.
+  - Foto's: alleen of er een foto is, niet de foto zelf.
+  - Wat op een andere tablet of in de sheet zelf ingevuld is na het ophalen, staat er pas bij na "Verversen".
+- **Rondgang: alle producties onder elkaar (nieuw in 1.7.0, op vraag van de controleur).** De tegel "Productiecontroles" opent één lijst met de producties van vandaag, zoals in de sheet. Bovenaan zoek je een code of product en tik je het resultaat aan: de productie staat er meteen bij, zonder tussenscherm. In elke rij staan de lijn, grondstof met lot, THT en allergenen, en de vier punten van Boven met hun knoppen en de opmerking. Onderaan sluit één knop "Boven afsluiten" alle volledige rijen tegelijk af; een onvolledige rij blijft open en wordt rood omrand. Een afgesloten rij toont haar antwoorden met een knop "Corrigeren". Elke rij toont de stand van Boven en Beneden, en een knop opent Beneden met één tik; na het afsluiten of met Terug kom je weer in de lijst. Het aparte scherm "Nieuwe controle" bestaat niet meer. Een tik op de code of naam van een rij toont alles van die controle (ook verwijderen). Een rij die er per vergissing staat en waar nog niets in ingevuld is, haal je weg met het kruisje.
+- **Gewijzigde gegevens in de rondgang.** Wijzigt lot, THT of allergenen bij het verversen, dan staat dat in de rij. "Boven afsluiten" sluit zo'n rij pas af nadat de controleur in die rij op "Gezien" getikt heeft, zodat "Gezien: lot" in de sheet is wat hij echt zag.
+- **Trechters in Werkmaterialen boven.** Bij elke trechter staat een blauw label met de lijn waar hij vandaag in de rondgang boven aangeduid is ("op L3"), ook als Boven daar nog niet afgesloten is. Zo ziet de controleur welke messen hij aan de lijn al bekeken heeft. Het label verandert niets aan de controle zelf.
 - **Boven en Beneden elk op één scherm.** Elk punt is één regel met de naam links en de knoppen rechts, in kolommen naast elkaar: drie op een liggende tablet, twee op een staande. Open punten zijn rood omrand. De uitleg uit de kop van de sheet staat klein onder de naam; een tik op de naam toont ze volledig. Lange keuzelijsten (operatoren, trechters) zijn een uitklaplijst met exact de keuzes van de sheet, die begint op "Kies…".
 - **THT.** Naast LOT ZK staat bij Beneden nu ook THT ZK, en naast LOT GRD bij Boven THT GRD (bij Beneden ook in het blok van Boven). De app haalt ze uit de productielijst, uit de kolommen "THT ZK" en "THT GRD", zoals de formules in L en AQ van de sheet dat doen. Voor een pallet toont de app wat de sheet toont: "Lot: …" en "THT: dd/mm/20jj" uit de poco list, en geen THT GRD. Wat de controleur zag, komt in de nieuwe kolommen "Gezien: THT ZK" en "Gezien: THT GRD".
 - **Lijn.** Bovenaan Boven en Beneden kiest de controleur de lijn van de productie: altijd precies één van de lijst (L0 tot L10, MUL, STICKS, GELPACK 1, GELPACK 2, VOLPAK). Er staat niets vooraf ingevuld, want in de productielijst ligt de lijn vaak nog niet vast (daar staat dan een combinatie zoals "L1, L3, L5"). Zonder lijn sluit een deel niet af. De keuze geldt voor de hele controle: wat bij Boven gekozen is, staat bij Beneden al klaar en kan nog gewijzigd worden. Bij het verzenden komt de lijn als waarde in kolom B van die rij, in de plaats van de formule. In het zoekscherm staat de lijn niet meer; zoeken gaat op code of product.
@@ -75,6 +94,9 @@ Nieuw:
 7. Foto nemen van een echte gewichtsfiche. Tik op de kleine foto: is alles leesbaar? Zo niet, dan moet de foto groter bewaard worden.
 7b. Operatoren: een controle met drie operatoren waarvan één niet in de lijst. In de eerste kolom "Operator" (R) staat de eerste naam, in de tweede (S) de andere twee met een komma. Die twee cellen tonen een waarschuwing van de gegevensvalidatie (rood hoekje); dat is de bedoeling. Weigert de sheet de waarde toch, dan zie je in de app "Fout: …": geef me die melding door.
 7d. THT: vergelijk voor twee orders en één pallet THT ZK en THT GRD in de app met L en AQ in de sheet. De tekst kan licht verschillen als de productielijst een echte datum bevat (bijvoorbeeld "1/8/2029" tegenover "01/08/2029"): de app toont de datum zoals de productielijst ze toont.
+6a. Rondgang (nieuw): voeg bij de start de codes van alle lijnen toe en doe Boven in de rijen. Passen er genoeg rijen op het scherm om vlot te werken (liggend ongeveer vier)? Tik op "Boven afsluiten" met één rij onvolledig: die blijft open en rood, de andere staan in de sheet. Open daarna Beneden vanuit de lijst en kijk of je na het afsluiten weer in de lijst staat. Zonder verbinding afgesloten rijen komen niet altijd in de volgorde van de lijst in de sheet.
+6c. Vorige controle (nieuw): kies in een rij een lijn en tik op "Vorige controle". Is dat de laatste rij van die lijn in de sheet? Wijzig de lijn: toont de knop nu de andere lijn? Doe twee producties na elkaar op dezelfde lijn zonder te verversen: de tweede moet de eerste tonen. Lijnen die in de oude rijen anders heten dan in de keuzelijst van de app (in de productielijst staat bijvoorbeeld "GELPACK", in de app "GELPACK 1" en "GELPACK 2") hebben pas een vorige controle zodra er één met de app gedaan is.
+6b. Werkmaterialen boven na de rondgang boven: staat bij de trechters die je aanduidde het juiste label ("op L3")?
 7a. Lijn: bij een nieuwe controle staat er "Kies…", ook als de productielijst een lijn of een combinatie heeft. Zonder lijn sluit het deel niet af. Na het verzenden staat de gekozen lijn als gewone waarde in kolom B. Kijk of het maandoverzicht en de tellers die rijen nog bij de juiste lijn tellen.
 7c. Foto opmerking nemen bij een NOK: de link staat in de nieuwe kolom. Een verzonden foto opnieuw nemen (Corrigeren): de cel wijst naar de nieuwe, de oude staat in de prullenbak van Drive.
 8. Vliegtuigmodus aan, drie controles met foto's, app sluiten, vliegtuigmodus uit: elke rij heeft één link in "Foto ZK & Gewichtsfiche" (AL) en eventueel in "Foto etiket" (AM), in de map staat per foto één bestand.
