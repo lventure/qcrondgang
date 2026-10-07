@@ -313,11 +313,10 @@ export function bouwVerzoek(controle, deel) {
 
 export const DAGSOORTEN = ['werk', 'magazijn'];
 export const DAGNAAM = { werk: 'Werkmaterialen boven', magazijn: 'Magazijn en bufferzone' };
-// werk: "OK" of een opmerking. magazijn: OK of NOK met een opmerking.
-export const DAGKEUZE = { werk: ['OK', 'Opmerking'], magazijn: ['OK', 'NOK'] };
-// Negatief werken: de vraag is "welke punten waren niet OK?". De controleur tikt
-// alleen die aan; wat hij niet aantikt, wordt bij het afsluiten OK.
-export const DAGNEGATIEF = { werk: true, magazijn: false };
+// Beide dagcontroles werken negatief: de vraag is "welke punten waren niet OK?".
+// De controleur tikt alleen die aan en schrijft erbij wat er scheelt; wat hij
+// niet aantikt, wordt bij het afsluiten OK. De metingen van Magazijn en
+// bufferzone zijn getallen en blijven altijd in te vullen.
 
 export const dagId = (soort, datum = vandaag()) => `${soort}:${datum}`;
 
@@ -329,13 +328,14 @@ export function nieuweDag(soort, datum = vandaag()) {
 /**
  * De controlepunten van een dagcontrole uit de snapshot. Beide dagcontroles
  * staan op één scherm, dus er is altijd één groep:
- *   werk     : alle punten, negatief (alleen aantikken wat niet OK was);
- *   magazijn : de metingen en daarna elk punt OK of NOK.
+ *   werk     : alle punten;
+ *   magazijn : de metingen (altijd invullen) en daarna alle punten.
+ * De punten werken negatief: alleen aantikken wat niet OK was.
  */
 export function dagGroepen(soort, snapshot) {
   const def = snapshot && snapshot.dag && snapshot.dag[soort];
   if (!def) return null;
-  return [{ titel: DAGNEGATIEF[soort] ? 'Welke punten waren niet OK?' : 'Metingen en inspecties', metingen: def.metingen || [], punten: def.punten }];
+  return [{ titel: 'Welke punten waren niet OK?', metingen: def.metingen || [], punten: def.punten }];
 }
 
 const isGetal = (x) => String(x == null ? '' : x).trim() !== '' && !isNaN(Number(String(x).replace(',', '.')));
@@ -349,8 +349,8 @@ export function dagOpen(dc, groepen, groep) {
     g.punten.forEach((p) => {
       const a = dc.antwoorden[p.kop];
       // Negatief werken: een punt dat niet aangetikt is, is niet open (het wordt OK bij het afsluiten).
-      if (!a && DAGNEGATIEF[dc.soort]) return;
-      if (!a || (a.ok !== true && !String(a.tekst || '').trim())) open.push(p.kop);
+      if (!a) return;
+      if (a.ok !== true && !String(a.tekst || '').trim()) open.push(p.kop);
     });
   });
   return open;

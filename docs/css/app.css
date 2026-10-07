@@ -294,10 +294,9 @@ textarea.invoer { min-height: 96px; resize: vertical; }
 .dag-tegel.open { border: 3px solid var(--nok); }
 .dag-slot { max-width: 520px; margin: 8px auto 0; }
 
-/* ---------- Magazijn en bufferzone op één scherm: NOK toont de opmerking onder de regel ---------- */
-.punt.regel.met-tekst { flex-wrap: wrap; }
-.punt.regel.met-tekst > textarea.invoer { flex: 1 1 100%; min-height: 50px; margin: 1px 4px 4px 0; padding: 4px 10px; border-radius: 9px; }
-.deel-raster[data-deel="dag"] .punt.regel .keuze { min-width: 66px; }
+/* ---------- Magazijn en bufferzone: de metingen staan bovenaan in hetzelfde raster als de tegels ---------- */
+.dag-raster .punt.regel { margin: 0 0 5px; }
+.dag-raster .groep-titel { margin: 2px 2px 3px; }
 
 /* ---------- Rondgang: alle producties van vandaag onder elkaar, Boven in de rij ---------- */
 .rb-top { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin: 2px 0 6px; }

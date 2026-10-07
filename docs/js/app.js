@@ -1336,27 +1336,8 @@ function dagTitel(soort, p) {
   return knip > 0 ? [p.kop.slice(0, knip), p.kop.slice(knip + 1).trim()] : [p.kop, ''];
 }
 
-/** Eén punt van Magazijn en bufferzone als een regel: links de naam, rechts OK of NOK; bij NOK een opmerking eronder. */
-function dagPunt(soort, dc, p, sleutel, open) {
-  const a = dc.antwoorden[p.kop];
-  const nok = !!a && a.ok === false;
-  const [okTekst, andersTekst] = M.DAGKEUZE[soort];
-  const [titel, hulp] = dagTitel(soort, p);
-  const $naam = h('div', { class: 'punt-naam', onclick: () => $naam.classList.toggle('uit') }, h('h3', {}, titel), hulp ? h('p', { class: 'hulp' }, hulp) : null);
-  const el = h('section', { class: `punt regel${open ? ' open' : ''}${nok ? ' met-tekst' : ''}`, 'data-punt': p.kop }, $naam,
-    h('div', { class: 'keuzes' },
-      h('button', { class: `keuze k-ok${a && a.ok === true ? ' gekozen' : ''}`, 'data-waarde': 'ok', onclick: () => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: true }; }) }, okTekst),
-      h('button', { class: `keuze k-nok${nok ? ' gekozen' : ''}`, 'data-waarde': 'anders',
-        onclick: () => bewaarDag(soort, dc.datum, (x) => { const oud = x.antwoorden[p.kop]; x.antwoorden[p.kop] = { ok: false, tekst: oud && oud.ok === false ? oud.tekst : '' }; }) }, andersTekst)));
-  if (nok) {
-    el.append(h('textarea', { class: 'invoer', 'data-invoer': sleutel, rows: 2, placeholder: 'Opmerking NOK (verplicht)',
-      oninput: (e) => bewaarDag(soort, dc.datum, (x) => { x.antwoorden[p.kop] = { ok: false, tekst: e.target.value }; }, { teken: false }) }, a.tekst || ''));
-  }
-  return el;
-}
-
 /**
- * Negatief werken (Werkmaterialen boven): één tegel per punt. Een tik zegt "dit
+ * Negatief werken (beide dagcontroles): één tegel per punt. Een tik zegt "dit
  * was niet OK" en vraagt wat er scheelt. Wat niet aangetikt is, wordt OK bij het
  * afsluiten.
  */
@@ -1422,7 +1403,6 @@ async function schermDag(soort, datum, gi) {
   const g = groepen[gi];
   const open = toonOpen ? M.dagOpen(dc, groepen, gi) : [];
   const laatste = gi === groepen.length - 1;
-  const negatief = M.DAGNEGATIEF[soort];
 
   async function verder() {
     let vers = await db.haal('dagcontroles', M.dagId(soort, datum));
@@ -1445,7 +1425,7 @@ async function schermDag(soort, datum, gi) {
       if (!isOpenDeel(x)) return false;
       // Negatief werken: elk getoond punt dat niet aangetikt is, wordt nu
       // uitdrukkelijk OK. Zo staat vast welke punten de controleur gezien heeft.
-      if (negatief) groepen.forEach((gr) => gr.punten.forEach((p) => { if (!x.antwoorden[p.kop]) x.antwoorden[p.kop] = { ok: true }; }));
+      groepen.forEach((gr) => gr.punten.forEach((p) => { if (!x.antwoorden[p.kop]) x.antwoorden[p.kop] = { ok: true }; }));
       x.status = 'klaar';
       x.versie += 1;
       x.afgeslotenOm = new Date().toISOString();
@@ -1460,43 +1440,37 @@ async function schermDag(soort, datum, gi) {
     `Dit is de dagcontrole van ${datumLang(datum)}, niet van vandaag. Afsluiten schrijft ze in de sheet bij die datum; staat daar voor die dag al iets, dan wordt het overschreven.`,
     dagWeg(dc)) : null;
 
-  if (negatief) {
-    // Trechters die in de rondgang boven van die dag bij een lijn aangeduid zijn.
-    const gebruik = M.trechtersInGebruik(await db.alle('controles'), dc.datum);
-    const inGebruik = g.punten.some((p) => gebruik.has(M.trechterNummer(dagTitel(soort, p)[0], true)));
-    // Na een correctie staan de punten uitdrukkelijk op OK; alleen "niet OK" telt als aangetikt.
-    const aantal = g.punten.length;
-    const nietOk = g.punten.filter((p) => { const a = dc.antwoorden[p.kop]; return a && a.ok === false; }).length;
-    return [
-      h('div', { class: 'dag-kop' },
-        h('h2', {}, `${M.DAGNAAM[soort]}: welke punten waren niet OK?`),
-        h('p', { class: 'stap' }, `${datumLang(dc.datum)} · Tik aan wat niet OK was en schrijf erbij wat er scheelt. Wat je niet aantikt, is OK.${inGebruik ? ' Blauw label: de lijn waar die trechter in de rondgang boven aangeduid is.' : ''}`)),
-      eerderBlok,
-      h('div', { class: 'dag-raster', id: 'dag' }, g.punten.map((p, i) => dagTegel(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop), gebruik))),
-      h('div', { class: 'slot dag-slot' },
-        open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Bij ${open.length} ${open.length === 1 ? 'punt' : 'punten'} ontbreekt de opmerking: schrijf wat er scheelt, of tik op "Toch OK".`) : null,
-        h('button', { class: 'knop hoofd breed', id: 'verder', 'data-niet-ok': String(nietOk), onclick: verder },
-          nietOk ? `Afsluiten: ${aantal - nietOk} OK, ${nietOk} niet OK` : `Afsluiten: alle ${aantal} punten OK`))
-    ];
-  }
-
-  // Magazijn en bufferzone: de metingen en alle punten op één scherm, in kolommen.
+  // Trechters die in de rondgang boven van die dag bij een lijn aangeduid zijn.
+  const gebruik = M.trechtersInGebruik(await db.alle('controles'), dc.datum);
+  const inGebruik = g.punten.some((p) => gebruik.has(M.trechterNummer(dagTitel(soort, p)[0], true)));
+  // Na een correctie staan de punten uitdrukkelijk op OK; alleen "niet OK" telt als aangetikt.
+  const aantal = g.punten.length;
+  const nietOk = g.punten.filter((p) => { const a = dc.antwoorden[p.kop]; return a && a.ok === false; }).length;
+  const metingenOpen = g.metingen.filter((m) => open.includes(m.kop)).length;
+  const puntenOpen = g.punten.filter((p) => open.includes(p.kop)).length;
   return [
     h('div', { class: 'dag-kop' },
-      h('h2', {}, M.DAGNAAM[soort]),
-      h('p', { class: 'stap' }, `${datumLang(dc.datum)} · Vul de metingen in en geef elk punt een antwoord. Bij ${M.DAGKEUZE[soort][1]} hoort een opmerking.`)),
+      h('h2', {}, `${M.DAGNAAM[soort]}: welke punten waren niet OK?`),
+      h('p', { class: 'stap' }, `${datumLang(dc.datum)} · ${g.metingen.length ? 'Vul de metingen in. ' : ''}Tik aan wat niet OK was en schrijf erbij wat er scheelt. Wat je niet aantikt, is OK.${inGebruik ? ' Blauw label: de lijn waar die trechter in de rondgang boven aangeduid is.' : ''}`)),
     eerderBlok,
-    h('div', { class: 'deel-raster', id: 'dag', 'data-deel': 'dag' },
-      g.metingen.length ? h('h3', { class: 'groep-titel' }, 'Metingen') : null,
-      g.metingen.map((m, i) => h('section', { class: `punt regel${open.includes(m.kop) ? ' open' : ''}`, 'data-meting': m.kop },
-        h('div', { class: 'punt-naam' }, h('h3', {}, m.kop)),
-        h('input', { class: 'invoer getal', 'data-invoer': `meting-${i}`, type: 'text', inputmode: 'decimal', autocomplete: 'off', value: dc.metingen[m.kop] === undefined ? '' : dc.metingen[m.kop],
-          oninput: (e) => bewaarDag(soort, datum, (x) => { x.metingen[m.kop] = e.target.value; }, { teken: false }) }))),
-      h('h3', { class: 'groep-titel' }, 'Inspecties'),
-      g.punten.map((p, i) => dagPunt(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop))),
-      h('div', { class: 'slot' },
-        open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, `Nog ${open.length} ${open.length === 1 ? 'punt' : 'punten'} open (rood omrand). Een meting is een getal; bij ${M.DAGKEUZE[soort][1]} hoort een opmerking.`) : null,
-        h('button', { class: 'knop hoofd breed', id: 'verder', onclick: verder }, 'Afsluiten')))
+    h('div', { class: 'dag-raster', id: 'dag' },
+      // De metingen zijn getallen: die vult de controleur altijd zelf in.
+      g.metingen.length ? [
+        h('h3', { class: 'groep-titel' }, 'Metingen (altijd invullen)'),
+        g.metingen.map((m, i) => h('section', { class: `punt regel${open.includes(m.kop) ? ' open' : ''}`, 'data-meting': m.kop },
+          h('div', { class: 'punt-naam' }, h('h3', {}, m.kop)),
+          h('input', { class: 'invoer getal', 'data-invoer': `meting-${i}`, type: 'text', inputmode: 'decimal', autocomplete: 'off', value: dc.metingen[m.kop] === undefined ? '' : dc.metingen[m.kop],
+            oninput: (e) => bewaarDag(soort, datum, (x) => { x.metingen[m.kop] = e.target.value; }, { teken: false }) }))),
+        h('h3', { class: 'groep-titel' }, 'Inspecties: tik aan wat niet OK was')
+      ] : null,
+      g.punten.map((p, i) => dagTegel(soort, dc, p, `dag-${gi}-${i}`, open.includes(p.kop), gebruik))),
+    h('div', { class: 'slot dag-slot' },
+      open.length ? h('div', { class: 'melding fout', id: 'open-melding' }, [
+        metingenOpen ? `${metingenOpen === 1 ? 'Eén meting ontbreekt of is' : `${metingenOpen} metingen ontbreken of zijn`} geen getal (rood omrand).` : '',
+        puntenOpen ? `Bij ${puntenOpen} ${puntenOpen === 1 ? 'punt' : 'punten'} ontbreekt de opmerking: schrijf wat er scheelt, of tik op "Toch OK".` : ''
+      ].filter(Boolean).join(' ')) : null,
+      h('button', { class: 'knop hoofd breed', id: 'verder', 'data-niet-ok': String(nietOk), onclick: verder },
+        nietOk ? `Afsluiten: ${aantal - nietOk} OK, ${nietOk} niet OK` : `Afsluiten: alle ${aantal} punten OK`))
   ];
 }
 
